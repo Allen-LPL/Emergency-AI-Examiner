@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# AI Models (large files)
+ai_engine/models/*.pt
+ai_engine/models/*.pth
+ai_engine/models/*.onnx
+ai_engine/models/*.bin
+
+# Uploads
+uploads/
+outputs/
+tmp/
+
+# Database
+*.db
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Coverage
+htmlcov/
+.coverage
+coverage.xml
+
+# Docker
+.docker/
+
+# Alembic
+backend/alembic/versions/*.pyc
+
+
+
+
+院外心脏骤停急救考核评分表.xlsx
+.history/

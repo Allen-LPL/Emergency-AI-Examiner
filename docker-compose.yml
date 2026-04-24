@@ -1,0 +1,116 @@
+version: "3.8"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: examiner_api
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    restart: always
+    env_file: .env
+    environment:
+      - POSTGRES_HOST=db
+      - REDIS_HOST=redis
+    volumes:
+      - uploads_data:/app/uploads
+    networks:
+      - examiner
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: ai_engine/Dockerfile
+    container_name: examiner_worker
+    command: celery -A backend.app.tasks.celery_app worker --loglevel=info --concurrency=1
+    depends_on:
+      - api
+      - redis
+      - db
+    restart: always
+    env_file: .env
+    environment:
+      - POSTGRES_HOST=db
+      - REDIS_HOST=redis
+    volumes:
+      - uploads_data:/app/uploads
+    networks:
+      - examiner
+
+  redis:
+    image: redis:7-alpine
+    container_name: examiner_redis
+    ports:
+      - "6379:6379"
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redis_data:/data
+    networks:
+      - examiner
+
+  db:
+    image: postgres:16-alpine
+    container_name: examiner_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-emergency_examiner}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - examiner
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: examiner_frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+    networks:
+      - examiner
+
+  flower:
+    image: mher/flower:2.0
+    container_name: examiner_flower
+    command: celery --broker=redis://redis:6379/0 flower --port=5555
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+      - celery_worker
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    networks:
+      - examiner
+
+volumes:
+  db_data:
+  redis_data:
+  uploads_data:
+
+networks:
+  examiner:
+    driver: bridge

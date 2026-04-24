@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  celery_worker:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - AI_DEVICE=cuda:0
+      - NVIDIA_VISIBLE_DEVICES=all

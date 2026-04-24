@@ -1,0 +1,33 @@
+# Core
+numpy>=1.24.0
+opencv-python>=4.8.0
+Pillow>=10.0.0
+torch>=2.0.0
+torchaudio>=2.0.0
+
+# Video Analysis
+ultralytics>=8.2.0
+# mmpose (install from source or mim)
+# mmaction2 (install from source or mim)
+# mmdet (dependency)
+# mmengine (dependency)
+
+# Audio Analysis
+funasr>=1.0.0
+modelscope>=1.10.0
+# whisperx (install from github)
+# pyannote.audio>=3.1.0
+
+# VAD
+silero-vad>=5.0.0
+
+# Audio Processing
+ffmpeg-python>=0.2.0
+soundfile>=0.12.0
+librosa>=0.10.0
+
+# Utilities
+tqdm>=4.66.0
+loguru>=0.7.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
