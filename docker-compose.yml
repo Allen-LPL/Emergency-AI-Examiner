@@ -81,9 +81,10 @@ services:
       - examiner
 
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
+    image: frontend:latest
+    # build:
+    #   context: ./frontend
+    #   dockerfile: Dockerfile
     container_name: examiner_frontend
     ports:
       - "80:80"
