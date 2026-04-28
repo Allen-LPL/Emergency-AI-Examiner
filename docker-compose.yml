@@ -2,9 +2,10 @@ version: "3.8"
 
 services:
   api:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
+    image: api:latest
+    # build:
+    #   context: .
+    #   dockerfile: backend/Dockerfile
     container_name: examiner_api
     depends_on:
       db:
@@ -92,7 +93,7 @@ services:
       - examiner
 
   flower:
-    image: mher/flower:2.0
+    image: mher/flower:latest
     container_name: examiner_flower
     command: celery --broker=redis://redis:6379/0 flower --port=5555
     ports:
