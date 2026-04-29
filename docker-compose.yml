@@ -2,10 +2,9 @@ version: "3.8"
 
 services:
   api:
-    image: api:latest
-    # build:
-    #   context: .
-    #   dockerfile: backend/Dockerfile
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: examiner_api
     depends_on:
       db:
@@ -19,6 +18,8 @@ services:
     environment:
       - POSTGRES_HOST=db
       - REDIS_HOST=redis
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
     volumes:
       - uploads_data:/app/uploads
     networks:
@@ -39,6 +40,8 @@ services:
     environment:
       - POSTGRES_HOST=db
       - REDIS_HOST=redis
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
     volumes:
       - uploads_data:/app/uploads
     networks:
