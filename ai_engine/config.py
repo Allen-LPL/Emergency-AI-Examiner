@@ -55,7 +55,7 @@ class AIEngineConfig(BaseSettings):
         default="./ai_engine/models", description="Model weights directory"
     )
 
-    model_config = {"env_prefix": "AI_", "env_file": ".env"}
+    model_config = {"env_prefix": "AI_", "env_file": ".env", "extra": "ignore"}
 
 
 def get_ai_config() -> AIEngineConfig:
