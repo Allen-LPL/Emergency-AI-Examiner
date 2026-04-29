@@ -22,7 +22,7 @@ RUN echo 'server { \
     try_files $uri $uri/ /index.html; \
     } \
     location /api/ { \
-    proxy_pass http://api:8001/api/; \
+    proxy_pass http://api:8000/api/; \
     proxy_set_header Host $host; \
     proxy_set_header X-Real-IP $remote_addr; \
     } \
