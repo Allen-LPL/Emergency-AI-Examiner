@@ -12,6 +12,12 @@ class Settings(BaseSettings):
     redis_host: str = "localhost"
     redis_port: int = 6379
 
+    celery_broker_url: str = "redis://localhost:6379/0"
+    celery_result_backend: str = "redis://localhost:6379/1"
+
+    app_host: str = "0.0.0.0"
+    app_port: int = 8000
+
     secret_key: str = "changeme-to-a-random-secret-key"
     access_token_expire_minutes: int = 1440
     algorithm: str = "HS256"
@@ -21,6 +27,13 @@ class Settings(BaseSettings):
 
     debug: bool = True
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+
+    ai_device: str = "cpu"
+    video_fps: int = 10
+    asr_model: str = "iic/SenseVoiceSmall"
+    pose_model: str = "rtmpose-m"
+    yolo_model: str = "yolov8n.pt"
+    hf_token: str = ""
 
     @property
     def async_database_url(self) -> str:
@@ -35,14 +48,6 @@ class Settings(BaseSettings):
             f"postgresql+psycopg2://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
-
-    @property
-    def celery_broker_url(self) -> str:
-        return f"redis://{self.redis_host}:{self.redis_port}/0"
-
-    @property
-    def celery_result_backend(self) -> str:
-        return f"redis://{self.redis_host}:{self.redis_port}/1"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
