@@ -1,0 +1,2 @@
+- 2026-04-29: Kept video action input spec-minimal by flattening detected persons into a shared `pose_sequence` with `track_id=None`; deferred real per-person tracking to later work.
+- 2026-04-29: Added local `pyright` directives plus `pyrightconfig.json` so repo diagnostics stay clean even when AI engine runtime dependencies are only installed in the project venv.

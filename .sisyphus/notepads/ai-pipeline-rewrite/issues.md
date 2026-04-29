@@ -1,0 +1,1 @@
+- 2026-04-29: Local verification required a project `.venv` because the host Python environment did not have `pydantic-settings`, `loguru`, `numpy`, or `opencv-python-headless` installed.

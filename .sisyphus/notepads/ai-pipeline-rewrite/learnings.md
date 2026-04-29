@@ -1,0 +1,2 @@
+- 2026-04-29: `FrameExtractor.extract_frames_adaptive()` needs a post-extraction trim to enforce the hard `max_total_frames` cap because integer frame intervals can still overshoot on long videos.
+- 2026-04-29: The ASR path should prefer `transcribe_segments(audio_path, vad_segments)` when VAD output exists so the VAD -> ASR handoff remains explicit.
