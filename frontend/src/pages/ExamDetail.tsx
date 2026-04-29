@@ -1,12 +1,13 @@
 import React, { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Button, Spin, Progress, Result, Card } from 'antd'
+import { Button, Spin, Result, Card } from 'antd'
 import { ArrowLeftOutlined, FileTextOutlined } from '@ant-design/icons'
 import { getExamStatus, getExamTimeline } from '../api'
 import type { ExamStatus, ExamEvent } from '../types'
 import { usePolling } from '../hooks/usePolling'
 import VideoPlayer from '../components/VideoPlayer'
 import Timeline from '../components/Timeline'
+import PipelineProgress from '../components/PipelineProgress'
 
 const ExamDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>()
@@ -87,16 +88,27 @@ const ExamDetail: React.FC = () => {
       </div>
 
       {isProcessing ? (
-        <Card className="text-center py-12">
-          <h3 className="text-xl mb-6 text-gray-700">AI正在进行多模态分析...</h3>
-          <Progress 
-            percent={status.progress} 
-            status="active" 
-            strokeColor={{ '0%': '#108ee9', '100%': '#87d068' }}
-            className="max-w-md mx-auto"
+        <div className="py-8">
+          <div className="text-center mb-8">
+            <h3 className="text-2xl font-bold text-slate-800 flex items-center justify-center gap-3">
+              <span className="relative flex h-4 w-4">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-4 w-4 bg-orange-500"></span>
+              </span>
+              AI多模态分析进行中
+            </h3>
+            <p className="text-slate-500 mt-2">系统正在对视频和音频进行深度解析，请耐心等待</p>
+          </div>
+          
+          <PipelineProgress 
+            progress={status.progress} 
+            status={status.status as 'pending' | 'processing' | 'completed' | 'failed'} 
           />
-          <p className="mt-4 text-gray-500">这可能需要几分钟时间，请耐心等待</p>
-        </Card>
+          
+          <div className="text-center mt-8 text-slate-400 text-sm">
+            预计剩余时间: {Math.max(1, Math.ceil((100 - status.progress) / 10))} 分钟
+          </div>
+        </div>
       ) : status.status === 'failed' ? (
         <Result
           status="error"
