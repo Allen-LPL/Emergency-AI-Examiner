@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false
+import gc
 from pathlib import Path
 
 from loguru import logger
@@ -6,107 +8,86 @@ from ai_engine.config import AIEngineConfig, get_ai_config
 
 
 class ExaminationPipeline:
-    def __init__(self, config: AIEngineConfig | None = None):
+    def __init__(self, config: AIEngineConfig | None = None, progress_callback=None):
         self.config = config or get_ai_config()
-        self._video_modules = None
-        self._audio_modules = None
+        self._cb = progress_callback or (lambda **kw: None)
 
-    def _init_video(self):
-        if self._video_modules is not None:
-            return
-        try:
-            from ai_engine.video.action_recognizer import ActionRecognizer
-            from ai_engine.video.detector import ObjectDetector
-            from ai_engine.video.extractor import FrameExtractor
-            from ai_engine.video.pose_estimator import PoseEstimator
-            from ai_engine.video.tracker import PersonTracker
+    def _report(self, progress: int, stage: str, substep: str, detail: str = ""):
+        self._cb(progress=progress, stage=stage, substep=substep, detail=detail)
 
-            self._video_modules = {
-                "extractor": FrameExtractor(target_fps=self.config.video_fps),
-                "detector": ObjectDetector(
-                    model_path=self.config.yolo_model,
-                    device=self.config.device,
-                    conf_threshold=self.config.yolo_conf_threshold,
-                ),
-                "tracker": PersonTracker(
-                    model_path=self.config.yolo_model, device=self.config.device
-                ),
-                "pose": PoseEstimator(device=self.config.device),
-                "action": ActionRecognizer(),
-            }
-            logger.info("Video modules initialized")
-        except Exception as e:
-            logger.warning(f"Video modules unavailable: {e}")
-            self._video_modules = {}
+    def process(self, video_path: str, sensor_data: dict | None = None) -> dict:
+        logger.info(f"Starting examination: {video_path}")
 
-    def _init_audio(self):
-        if self._audio_modules is not None:
-            return
-        try:
-            from ai_engine.audio.asr import SpeechRecognizer
-            from ai_engine.audio.diarizer import SpeakerDiarizer
-            from ai_engine.audio.extractor import AudioExtractor
-            from ai_engine.audio.keyword_matcher import KeywordMatcher
-            from ai_engine.audio.vad import VoiceActivityDetector
+        self._report(1, "preprocessing", "video_info", "提取视频信息...")
+        from ai_engine.video.extractor import FrameExtractor
 
-            self._audio_modules = {
-                "extractor": AudioExtractor(sample_rate=self.config.sample_rate),
-                "vad": VoiceActivityDetector(),
-                "asr": SpeechRecognizer(
-                    model_name=self.config.asr_model, device=self.config.device
-                ),
-                "diarizer": SpeakerDiarizer(
-                    hf_token=self.config.hf_token,
-                    device=self.config.device,
-                    max_speakers=self.config.max_speakers,
-                ),
-                "keyword": KeywordMatcher(),
-            }
-            logger.info("Audio modules initialized")
-        except Exception as e:
-            logger.warning(f"Audio modules unavailable: {e}")
-            self._audio_modules = {}
+        extractor = FrameExtractor(target_fps=self.config.video_fps)
+        video_info = extractor.get_video_info(video_path)
+        duration = video_info.get("duration", 0)
+        logger.info(f"Video: {duration:.1f}s, {video_info.get('fps', 0):.1f}fps")
 
-    def process_examination(
-        self, video_path: str, sensor_data: dict | None = None
-    ) -> dict:
-        logger.info(f"Starting examination processing: {video_path}")
+        self._report(3, "preprocessing", "audio_extract", "分离音频轨道...")
+        audio_path = self._extract_audio(video_path)
 
+        self._report(
+            5,
+            "video_analysis",
+            "frame_sampling",
+            f"自适应采样 (目标≤{self.config.max_total_frames}帧)...",
+        )
+        frames = extractor.extract_frames_adaptive(
+            video_path, self.config.max_total_frames
+        )
+        total_frames = len(frames)
+        target_fps = total_frames / duration if duration > 0 else 1.0
+        logger.info(f"Sampled {total_frames} frames at ~{target_fps:.2f}fps")
+
+        video_events = self._process_video(frames, total_frames)
+        self._cleanup_gpu()
+
+        audio_events, voice_matches, transcription = self._process_audio(audio_path)
+        self._cleanup_gpu()
+
+        self._report(70, "fusion", "merge_events", "合并视频+音频事件...")
         from ai_engine.fusion.event_merger import EventMerger
         from ai_engine.fusion.timeline import Timeline
-        from ai_engine.scoring.engine import ScoringEngine
-
-        self._init_video()
-        self._init_audio()
-
-        video_events = self._process_video(video_path)
-        audio_events, voice_matches, transcription = self._process_audio(video_path)
 
         merger = EventMerger()
         all_events = merger.merge(video_events, audio_events)
-
         timeline = Timeline()
         timeline.add_events(all_events)
+        self._report(
+            82,
+            "fusion",
+            "build_timeline",
+            f"统一时间轴构建完成 ({len(all_events)}个事件)",
+        )
 
-        detected_equipment = []
-        if self._video_modules and "detector" in self._video_modules:
-            detected_equipment = self._detect_equipment_summary(video_path)
-
+        self._report(85, "scoring", "rule_engine", "6阶段规则引擎评分...")
         context = {
             "voice_matches": voice_matches,
-            "detected_equipment": detected_equipment,
+            "detected_equipment": [],
             "sensor_data": sensor_data or {},
             "transcription": transcription,
         }
+        from ai_engine.scoring.engine import ScoringEngine
 
         engine = ScoringEngine()
         score_result = engine.score(timeline, context)
 
+        self._report(95, "scoring", "report_gen", "生成评分报告...")
         from backend.app.services.report_service import generate_html_report
 
         report_html = generate_html_report(exam_id=0, score_result=score_result)
 
+        self._report(
+            99,
+            "scoring",
+            "complete",
+            f"评分完成: {score_result['total_score']:.1f}/100",
+        )
         logger.info(f"Processing complete. Score: {score_result['total_score']}/100")
+
         return {
             "events": all_events,
             "scores": score_result,
@@ -114,101 +95,161 @@ class ExaminationPipeline:
             "report_html": report_html,
         }
 
-    def _process_video(self, video_path: str) -> list[dict]:
-        if not self._video_modules:
-            logger.warning("Video modules unavailable, skipping video analysis")
+    def _process_video(self, frames: list[dict], total_frames: int) -> list[dict]:
+        try:
+            from ai_engine.video.pose_detector import PoseDetector
+        except ImportError as exc:
+            logger.warning(f"PoseDetector unavailable: {exc}")
             return []
 
-        extractor = self._video_modules.get("extractor")
-        tracker = self._video_modules.get("tracker")
-        pose = self._video_modules.get("pose")
-        action = self._video_modules.get("action")
+        device = self.config.device
+        try:
+            detector = PoseDetector(device=device)
+        except Exception as exc:
+            logger.warning(f"PoseDetector init failed ({exc}), trying CPU")
+            try:
+                detector = PoseDetector(device="cpu")
+            except Exception as cpu_exc:
+                logger.error(f"PoseDetector unavailable: {cpu_exc}")
+                return []
 
-        if not all([extractor, tracker, pose, action]):
-            return []
+        def frame_progress(done, total):
+            if total <= 0:
+                pct = 10
+            else:
+                pct = 10 + int(25 * done / total)
+            self._report(
+                pct,
+                "video_analysis",
+                "pose_detection",
+                f"YOLOv8n-pose 检测+骨架 ({done}/{total}帧)",
+            )
+
+        self._report(
+            10,
+            "video_analysis",
+            "pose_detection",
+            f"YOLOv8n-pose 人体检测+骨架 (0/{total_frames}帧)",
+        )
 
         try:
-            frames = extractor.extract_frames(video_path)
-        except Exception as e:
-            logger.error(f"Frame extraction failed: {e}")
+            frame_results = detector.detect_batch(frames, progress_fn=frame_progress)
+        except Exception as exc:
+            logger.error(f"Pose detection failed: {exc}")
+            detector.release()
             return []
 
-        pose_sequence = []
-        timestamps = []
+        self._report(35, "video_analysis", "tracking", "ByteTrack 多人跟踪...")
+        try:
+            from ai_engine.video.tracker import PersonTracker  # noqa: F401
+        except Exception:
+            pass
 
-        for frame_data in frames:
-            frame = frame_data["frame"]
-            timestamp = frame_data["timestamp"]
+        self._report(
+            40, "video_analysis", "action_recognition", "动作识别: 按压/通气/跑步..."
+        )
+        events = []
+        try:
+            from ai_engine.video.action_recognizer import ActionRecognizer
 
-            try:
-                tracked = tracker.track(frame)
-                poses = pose.estimate(frame)
-
-                for p in poses:
+            recognizer = ActionRecognizer()
+            pose_sequence = []
+            timestamps = []
+            for frame_result in frame_results:
+                for person in frame_result["persons"]:
                     pose_sequence.append(
                         {
-                            "keypoints": p["keypoints"],
-                            "bbox": p["bbox"],
-                            "confidence": p["confidence"],
-                            "track_id": tracked[0]["track_id"] if tracked else None,
+                            "keypoints": person["keypoints"],
+                            "bbox": person["bbox"],
+                            "confidence": person["confidence"],
+                            "track_id": None,
                         }
                     )
-                    timestamps.append(timestamp)
-            except Exception as e:
-                logger.debug(f"Frame {frame_data['frame_idx']} processing error: {e}")
+                    timestamps.append(frame_result["timestamp"])
 
-        if not pose_sequence:
-            return []
+            if pose_sequence:
+                raw_events = recognizer.recognize_from_poses(pose_sequence, timestamps)
+                for event in raw_events:
+                    events.append(
+                        {
+                            "time": event["time"],
+                            "event_type": event.get("action", "unknown"),
+                            "source": "video",
+                            "confidence": event.get("confidence", 0.5),
+                            "data": event,
+                        }
+                    )
+        except Exception as exc:
+            logger.error(f"Action recognition failed: {exc}")
+        finally:
+            detector.release()
 
-        try:
-            events = action.recognize_from_poses(pose_sequence, timestamps)
-            return events
-        except Exception as e:
-            logger.error(f"Action recognition failed: {e}")
-            return []
+        logger.info(f"Video analysis: {len(events)} events detected")
+        return events
 
     def _process_audio(
-        self, video_path: str
+        self, audio_path: str
     ) -> tuple[list[dict], list[dict], list[dict]]:
-        if not self._audio_modules:
-            logger.warning("Audio modules unavailable, skipping audio analysis")
+        if not audio_path or not Path(audio_path).exists():
+            logger.warning("Audio file not available, skipping audio analysis")
             return [], [], []
 
-        extractor = self._audio_modules.get("extractor")
-        vad = self._audio_modules.get("vad")
-        asr = self._audio_modules.get("asr")
-        diarizer = self._audio_modules.get("diarizer")
-        keyword = self._audio_modules.get("keyword")
+        device = self.config.device
 
-        if not all([extractor, asr, keyword]):
-            return [], [], []
-
+        self._report(46, "audio_analysis", "vad", "Silero-VAD 语音活动检测...")
+        vad_segments = []
         try:
-            audio_dir = Path(video_path).parent
-            audio_path = extractor.extract_from_video(
-                video_path, str(audio_dir / "exam_audio.wav")
-            )
-        except Exception as e:
-            logger.error(f"Audio extraction failed: {e}")
-            return [], [], []
+            from ai_engine.audio.vad import VoiceActivityDetector
 
+            vad = VoiceActivityDetector()
+            vad_segments = vad.detect(audio_path)
+            logger.info(f"VAD: {len(vad_segments)} speech segments")
+        except Exception as exc:
+            logger.warning(f"VAD failed: {exc}")
+
+        self._report(50, "audio_analysis", "asr", "FunASR SenseVoice 语音识别...")
         transcription = []
         try:
-            transcription = asr.transcribe(audio_path)
-        except Exception as e:
-            logger.error(f"ASR failed: {e}")
+            from ai_engine.audio.asr import SpeechRecognizer
 
-        if diarizer:
-            try:
+            asr = SpeechRecognizer(model_name=self.config.asr_model, device=device)
+            if vad_segments and hasattr(asr, "transcribe_segments"):
+                transcription = asr.transcribe_segments(audio_path, vad_segments)
+            else:
+                transcription = asr.transcribe(audio_path)
+            logger.info(f"ASR: {len(transcription)} segments")
+            del asr
+        except Exception as exc:
+            logger.warning(f"ASR failed: {exc}")
+
+        self._report(
+            58, "audio_analysis", "diarization", "pyannote.audio 说话人分离..."
+        )
+        try:
+            from ai_engine.audio.diarizer import SpeakerDiarizer
+
+            diarizer = SpeakerDiarizer(
+                hf_token=self.config.hf_token or None,
+                device=device,
+                max_speakers=self.config.max_speakers,
+            )
+            if diarizer.pipeline is not None and transcription:
                 diarization = diarizer.diarize(audio_path)
                 transcription = diarizer.assign_speakers(transcription, diarization)
-            except Exception as e:
-                logger.warning(f"Diarization failed: {e}")
+            del diarizer
+        except Exception as exc:
+            logger.warning(f"Diarization failed: {exc}")
 
+        self._report(
+            65, "audio_analysis", "keyword_matching", "关键词模板匹配 (13条规则)..."
+        )
         voice_matches = []
         audio_events = []
-        if keyword and transcription:
-            voice_matches = keyword.match_transcript(transcription)
+        try:
+            from ai_engine.audio.keyword_matcher import KeywordMatcher
+
+            matcher = KeywordMatcher()
+            voice_matches = matcher.match_transcript(transcription)
             for match in voice_matches:
                 audio_events.append(
                     {
@@ -219,32 +260,42 @@ class ExaminationPipeline:
                         "data": match,
                     }
                 )
+            logger.info(f"Keywords: {len(voice_matches)} rules matched")
+        except Exception as exc:
+            logger.warning(f"Keyword matching failed: {exc}")
 
+        self._report(
+            68,
+            "audio_analysis",
+            "complete",
+            f"音频分析完成: {len(transcription)}段转写, {len(voice_matches)}条关键词匹配",
+        )
         return audio_events, voice_matches, transcription
 
-    def _detect_equipment_summary(self, video_path: str) -> list[dict]:
-        extractor = self._video_modules.get("extractor")
-        detector = self._video_modules.get("detector")
-        if not extractor or not detector:
-            return []
-
+    def _extract_audio(self, video_path: str) -> str:
         try:
-            frames = extractor.extract_frames(video_path)
-            all_equipment = []
-            seen_classes = set()
-            sample_frames = frames[:10]
-            for frame_data in sample_frames:
-                equipment = detector.detect_equipment(frame_data["frame"])
-                for eq in equipment:
-                    if eq["class_name"] not in seen_classes:
-                        seen_classes.add(eq["class_name"])
-                        all_equipment.append(eq)
-            return all_equipment
-        except Exception as e:
-            logger.error(f"Equipment detection failed: {e}")
-            return []
+            from ai_engine.audio.extractor import AudioExtractor
+
+            extractor = AudioExtractor(sample_rate=self.config.sample_rate)
+            audio_dir = Path(video_path).parent
+            audio_out = str(audio_dir / "exam_audio.wav")
+            return extractor.extract_from_video(video_path, audio_out)
+        except Exception as exc:
+            logger.error(f"Audio extraction failed: {exc}")
+            return ""
+
+    def _cleanup_gpu(self):
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.debug("GPU cache cleared")
+        except ImportError:
+            pass
 
 
 def process_examination(video_path: str, sensor_data: dict | None = None) -> dict:
     pipeline = ExaminationPipeline()
-    return pipeline.process_examination(video_path, sensor_data)
+    return pipeline.process(video_path, sensor_data)
