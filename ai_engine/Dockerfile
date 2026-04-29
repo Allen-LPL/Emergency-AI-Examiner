@@ -2,6 +2,8 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+ENV PYTHONPATH=/app
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg libsndfile1 libpq-dev gcc libgl1 libglib2.0-0 && \
     rm -rf /var/lib/apt/lists/*
