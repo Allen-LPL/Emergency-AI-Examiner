@@ -6,6 +6,7 @@ celery_app = Celery(
     "emergency_examiner",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
+    include=["backend.app.tasks.exam_task"],
 )
 
 celery_app.conf.update(
@@ -17,5 +18,3 @@ celery_app.conf.update(
     worker_send_task_events=True,
     task_send_sent_event=True,
 )
-
-celery_app.autodiscover_tasks(["backend.app.tasks"])
