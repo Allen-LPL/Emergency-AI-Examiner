@@ -1,5 +1,5 @@
+# pyright: reportMissingImports=false
 import cv2
-import numpy as np
 from loguru import logger
 
 
@@ -61,3 +61,26 @@ class FrameExtractor:
         cap.release()
         logger.info(f"Extracted {len(frames)} frames from {frame_idx} total")
         return frames
+
+    def extract_frames_adaptive(
+        self, video_path: str, max_frames: int = 600
+    ) -> list[dict]:
+        info = self.get_video_info(video_path)
+        duration = info["duration"]
+        if duration <= 0:
+            return self.extract_frames(video_path)
+
+        target_fps = min(2.0, max_frames / duration)
+        target_fps = max(0.1, target_fps)
+
+        original_fps = self.target_fps
+        self.target_fps = target_fps
+        try:
+            frames = self.extract_frames(video_path)
+        finally:
+            self.target_fps = original_fps
+
+        if len(frames) <= max_frames:
+            return frames
+
+        return frames[:max_frames]
