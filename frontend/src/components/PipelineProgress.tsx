@@ -13,6 +13,9 @@ import {
 interface PipelineProgressProps {
   progress: number;
   status: 'pending' | 'processing' | 'completed' | 'failed';
+  stage?: string;
+  substep?: string;
+  detail?: string;
 }
 
 interface StageConfig {
@@ -23,6 +26,14 @@ interface StageConfig {
   progressRange: [number, number];
   subSteps: string[];
 }
+
+const STAGE_KEY_MAP: Record<string, number> = {
+  preprocessing: 0,
+  video_analysis: 1,
+  audio_analysis: 2,
+  fusion: 3,
+  scoring: 4,
+};
 
 const STAGES: StageConfig[] = [
   {
@@ -67,14 +78,20 @@ const STAGES: StageConfig[] = [
   }
 ];
 
-const PipelineProgress: React.FC<PipelineProgressProps> = ({ progress, status }) => {
+const PipelineProgress: React.FC<PipelineProgressProps> = ({ progress, status, stage, detail }) => {
   const [subStepIndex, setSubStepIndex] = useState(0);
 
-  const currentStageIndex = STAGES.findIndex(
-    stage => progress >= stage.progressRange[0] && progress < stage.progressRange[1]
-  );
-  
-  const activeStageIndex = progress >= 100 ? 4 : (currentStageIndex === -1 ? 0 : currentStageIndex);
+  let activeStageIndex = 0;
+  if (progress >= 100 || status === 'completed') {
+    activeStageIndex = 4;
+  } else if (stage && STAGE_KEY_MAP[stage] !== undefined) {
+    activeStageIndex = STAGE_KEY_MAP[stage];
+  } else {
+    const currentStageIndex = STAGES.findIndex(
+      s => progress >= s.progressRange[0] && progress < s.progressRange[1]
+    );
+    activeStageIndex = currentStageIndex === -1 ? 0 : currentStageIndex;
+  }
 
   useEffect(() => {
     if (status !== 'processing') return;
@@ -96,23 +113,23 @@ const PipelineProgress: React.FC<PipelineProgressProps> = ({ progress, status })
   return (
     <div className="w-full max-w-3xl mx-auto bg-white rounded-xl shadow-sm border border-slate-200 p-8">
       <div className="relative">
-        {STAGES.map((stage, index) => {
-          const isCompleted = progress >= stage.progressRange[1] || status === 'completed';
+        {STAGES.map((stageConfig, index) => {
+          const isCompleted = progress >= stageConfig.progressRange[1] || status === 'completed';
           const isActive = index === activeStageIndex && status === 'processing';
           const isFailed = index === activeStageIndex && status === 'failed';
-          const isPending = progress < stage.progressRange[0] && status !== 'failed';
+          const isPending = progress < stageConfig.progressRange[0] && status !== 'failed';
 
           let lineFill = 0;
           if (isCompleted) {
             lineFill = 100;
           } else if (isActive) {
-            const range = stage.progressRange[1] - stage.progressRange[0];
-            const current = progress - stage.progressRange[0];
+            const range = stageConfig.progressRange[1] - stageConfig.progressRange[0];
+            const current = progress - stageConfig.progressRange[0];
             lineFill = Math.max(0, Math.min(100, (current / range) * 100));
           }
 
           return (
-            <div key={stage.id} className="relative flex items-start mb-12 last:mb-0">
+            <div key={stageConfig.id} className="relative flex items-start mb-12 last:mb-0">
               {index < STAGES.length - 1 && (
                 <div className="absolute left-6 top-12 bottom-[-3rem] w-0.5 bg-slate-100">
                   <div 
@@ -132,7 +149,7 @@ const PipelineProgress: React.FC<PipelineProgressProps> = ({ progress, status })
                 `}>
                   {isCompleted ? <CheckCircleFilled className="text-2xl" /> : 
                    isFailed ? <CloseCircleFilled className="text-2xl" /> : 
-                   stage.icon}
+                   stageConfig.icon}
                 </div>
                 
                 {isActive && (
@@ -143,22 +160,22 @@ const PipelineProgress: React.FC<PipelineProgressProps> = ({ progress, status })
               <div className={`flex-1 pt-2 transition-opacity duration-300 ${isPending ? 'opacity-50' : 'opacity-100'}`}>
                 <div className="flex items-center justify-between mb-1">
                   <h4 className={`text-lg font-bold m-0 ${isActive ? 'text-orange-600' : 'text-slate-800'}`}>
-                    {stage.title}
+                    {stageConfig.title}
                   </h4>
                   <span className="text-sm font-medium text-slate-400">
-                    {stage.progressRange[0]}% - {stage.progressRange[1]}%
+                    {stageConfig.progressRange[0]}% - {stageConfig.progressRange[1]}%
                   </span>
                 </div>
                 
                 <p className="text-sm text-slate-500 mb-2">
-                  {stage.description}
+                  {stageConfig.description}
                 </p>
 
                 {isActive && (
                   <div className="flex items-center text-sm text-orange-600 bg-orange-50 px-3 py-2 rounded-md border border-orange-100 w-fit animate-pulse">
                     <LoadingOutlined className="mr-2" />
                     <span className="transition-all duration-300">
-                      {stage.subSteps[subStepIndex]}
+                      {detail || stageConfig.subSteps[subStepIndex]}
                     </span>
                   </div>
                 )}

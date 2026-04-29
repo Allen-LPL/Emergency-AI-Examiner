@@ -40,4 +40,7 @@ export interface ExamStatus {
   id: number
   status: string
   progress: number
+  stage?: string
+  substep?: string
+  detail?: string
 }

@@ -102,7 +102,10 @@ const ExamDetail: React.FC = () => {
           
           <PipelineProgress 
             progress={status.progress} 
-            status={status.status as 'pending' | 'processing' | 'completed' | 'failed'} 
+            status={status.status as 'pending' | 'processing' | 'completed' | 'failed'}
+            stage={status.stage}
+            substep={status.substep}
+            detail={status.detail}
           />
           
           <div className="text-center mt-8 text-slate-400 text-sm">
