@@ -1,6 +1,7 @@
 from loguru import logger
 
 from backend.app.database import get_sync_db
+from backend.app.models.exam import Exam
 from backend.app.services.exam_service import (
     save_exam_events_sync,
     save_exam_scores_sync,
@@ -15,8 +16,6 @@ def process_exam_task(self, exam_id: int, video_path: str):
     db = next(db_gen)
 
     try:
-        from backend.app.models.exam import Exam
-
         exam = db.query(Exam).filter(Exam.id == exam_id).first()
         if not exam:
             logger.error(f"Exam {exam_id} not found")
@@ -27,9 +26,24 @@ def process_exam_task(self, exam_id: int, video_path: str):
 
         self.update_state(state="PROGRESS", meta={"progress": 10})
 
-        from ai_engine.pipeline import process_examination
+        from ai_engine.config import get_ai_config
+        from ai_engine.pipeline import ExaminationPipeline
 
-        result = process_examination(video_path)
+        def _progress(progress, stage, substep, detail=""):
+            self.update_state(
+                state="PROGRESS",
+                meta={
+                    "progress": progress,
+                    "stage": stage,
+                    "substep": substep,
+                    "detail": detail,
+                },
+            )
+
+        pipeline = ExaminationPipeline(
+            config=get_ai_config(), progress_callback=_progress
+        )
+        result = pipeline.process(video_path)
 
         self.update_state(state="PROGRESS", meta={"progress": 80})
 

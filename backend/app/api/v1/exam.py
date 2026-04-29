@@ -79,6 +79,9 @@ async def get_exam_status(
         )
 
     progress = 0
+    stage = None
+    substep = None
+    detail = None
     if exam.status == "completed":
         progress = 100
     elif exam.status == "processing" and exam.task_id:
@@ -87,8 +90,18 @@ async def get_exam_status(
         result = celery_app.AsyncResult(exam.task_id)
         if result.state == "PROGRESS" and isinstance(result.info, dict):
             progress = result.info.get("progress", 0)
+            stage = result.info.get("stage")
+            substep = result.info.get("substep")
+            detail = result.info.get("detail")
 
-    return ExamStatusResponse(id=exam.id, status=exam.status, progress=progress)
+    return ExamStatusResponse(
+        id=exam.id,
+        status=exam.status,
+        progress=progress,
+        stage=stage,
+        substep=substep,
+        detail=detail,
+    )
 
 
 @router.get("/{exam_id}/result", response_model=ScoreResultResponse)

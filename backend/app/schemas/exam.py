@@ -19,6 +19,9 @@ class ExamStatusResponse(BaseModel):
     id: int
     status: str
     progress: int = 0
+    stage: str | None = None
+    substep: str | None = None
+    detail: str | None = None
 
 
 class ExamUploadResponse(BaseModel):
