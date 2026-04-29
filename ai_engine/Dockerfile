@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY ai_engine/requirements.txt /app/ai_engine_requirements.txt
 COPY backend/requirements.txt /app/backend_requirements.txt
 
-RUN pip install --no-cache-dir -r /app/backend_requirements.txt && \
-    pip install --no-cache-dir -r /app/ai_engine_requirements.txt || true
+RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com -r /app/backend_requirements.txt && \
+    pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com -r /app/ai_engine_requirements.txt || true
 
 COPY . .
 

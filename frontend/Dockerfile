@@ -16,6 +16,7 @@ COPY --from=build /app/dist /usr/share/nginx/html
 
 RUN echo 'server { \
     listen 80; \
+    client_max_body_size 2048M; \
     location / { \
     root /usr/share/nginx/html; \
     index index.html index.htm; \
