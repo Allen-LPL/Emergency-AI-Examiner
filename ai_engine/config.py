@@ -1,3 +1,4 @@
+# pyright: reportMissingImports=false
 """AI Engine configuration."""
 
 from pydantic_settings import BaseSettings
@@ -28,6 +29,9 @@ class AIEngineConfig(BaseSettings):
     pose_keypoint_threshold: float = Field(
         default=0.3, description="Keypoint confidence threshold"
     )
+    max_total_frames: int = Field(
+        default=600, description="Max frames to sample from video"
+    )
 
     # Audio Processing
     asr_model: str = Field(
@@ -55,7 +59,12 @@ class AIEngineConfig(BaseSettings):
         default="./ai_engine/models", description="Model weights directory"
     )
 
-    model_config = {"env_prefix": "AI_", "env_file": ".env", "extra": "ignore"}
+    model_config = {
+        "env_prefix": "AI_",
+        "env_file": ".env",
+        "extra": "ignore",
+        "protected_namespaces": ("settings_",),
+    }
 
 
 def get_ai_config() -> AIEngineConfig:
