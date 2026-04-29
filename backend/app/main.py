@@ -7,12 +7,17 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.app.api.v1.router import api_v1_router
 from backend.app.config import settings
-from backend.app.database import async_engine
+from backend.app.database import Base, async_engine
+from backend.app.models import Exam, ExamEvent, ExamScore, User  # noqa: F401
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
+
+    async with async_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
     yield
     await async_engine.dispose()
 
