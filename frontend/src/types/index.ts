@@ -44,3 +44,15 @@ export interface ExamStatus {
   substep?: string
   detail?: string
 }
+
+export interface SensorData {
+  id: number
+  exam_id: number
+  compression_compliance_rate: number
+  ventilation_compliance_rate: number
+  ccf_percentage: number
+  avg_compression_depth: number | null
+  avg_compression_rate: number | null
+  total_compressions: number | null
+  total_ventilations: number | null
+}

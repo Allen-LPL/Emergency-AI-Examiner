@@ -27,6 +27,11 @@ services:
     build:
       context: .
       dockerfile: ai_engine/Dockerfile
+      args:
+        - HTTP_PROXY=http://172.17.0.1:10809
+        - HTTPS_PROXY=http://172.17.0.1:10809
+        - http_proxy=http://172.17.0.1:10809
+        - https_proxy=http://172.17.0.1:10809
     container_name: examiner_worker
     command: celery -A backend.app.tasks.celery_app worker --loglevel=info --concurrency=1
     depends_on:
@@ -42,6 +47,7 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
     volumes:
       - uploads_data:/app/uploads
+      - model_cache:/root/.cache
     networks:
       - examiner
 
@@ -113,6 +119,7 @@ volumes:
   db_data:
   redis_data:
   uploads_data:
+  model_cache:
 
 networks:
   examiner:

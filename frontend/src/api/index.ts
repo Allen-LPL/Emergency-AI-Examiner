@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { Exam, ExamStatus, ScoreResult, ExamEvent } from '../types'
+import type { Exam, ExamStatus, ScoreResult, ExamEvent, SensorData } from '../types'
 
 const api = axios.create({
   baseURL: '/api/v1',
@@ -36,6 +36,25 @@ export const getExamResult = async (id: number): Promise<ScoreResult> => {
 
 export const getExamTimeline = async (id: number): Promise<ExamEvent[]> => {
   const response = await api.get<ExamEvent[]>(`/exam/${id}/timeline`)
+  return response.data
+}
+
+export const getExamScores = async (id: number): Promise<ScoreResult> => {
+  const response = await api.get<ScoreResult>(`/exam/${id}/result`)
+  return response.data
+}
+
+export const getSensorData = async (id: number): Promise<SensorData | null> => {
+  try {
+    const response = await api.get<SensorData>(`/sensor/${id}`)
+    return response.data
+  } catch {
+    return null
+  }
+}
+
+export const generateMockSensor = async (id: number): Promise<SensorData> => {
+  const response = await api.post<SensorData>(`/sensor/mock/${id}`)
   return response.data
 }
 

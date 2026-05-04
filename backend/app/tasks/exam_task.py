@@ -40,10 +40,21 @@ def process_exam_task(self, exam_id: int, video_path: str):
                 },
             )
 
+        from backend.app.models.sensor import SensorData
+
+        sensor_row = db.query(SensorData).filter(SensorData.exam_id == exam_id).first()
+        sensor_dict = None
+        if sensor_row:
+            sensor_dict = {
+                "compression_compliance_rate": sensor_row.compression_compliance_rate,
+                "ventilation_compliance_rate": sensor_row.ventilation_compliance_rate,
+                "ccf_percentage": sensor_row.ccf_percentage,
+            }
+
         pipeline = ExaminationPipeline(
             config=get_ai_config(), progress_callback=_progress
         )
-        result = pipeline.process(video_path)
+        result = pipeline.process(video_path, sensor_data=sensor_dict)
 
         self.update_state(state="PROGRESS", meta={"progress": 80})
 
