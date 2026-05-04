@@ -56,3 +56,32 @@ export interface SensorData {
   total_compressions: number | null
   total_ventilations: number | null
 }
+
+export interface TranscriptSegment {
+  start: number
+  end: number
+  text: string
+  speaker: string | null
+  speaker_role: 'doctor' | 'nurse' | 'driver' | 'unknown' | null
+  similarity?: number
+}
+
+export interface VoiceMatch {
+  time: number
+  rule_code: string
+  rule_name: string
+  phase: string
+  score: number
+  similarity: number
+  matched_text: string
+  matched_template: string
+  speaker: string | null
+  speaker_role: string | null
+  role_correct: boolean
+}
+
+export interface ExamDebugData {
+  transcription: TranscriptSegment[]
+  voice_matches: VoiceMatch[]
+  speaker_roles: Record<string, string>
+}

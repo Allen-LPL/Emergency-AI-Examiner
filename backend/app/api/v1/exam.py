@@ -139,6 +139,51 @@ async def get_exam_timeline(
     return TimelineResponse(events=events)
 
 
+@router.get("/{exam_id}/debug")
+async def get_exam_debug_data(
+    exam_id: int,
+    db: AsyncSession = Depends(get_async_db),
+):
+    """调试数据接口(无鉴权): 返回转写文本、话术匹配、说话人角色"""
+    exam = await exam_service.get_exam(db, exam_id)
+    if not exam:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="考试记录不存在"
+        )
+
+    events = await exam_service.get_exam_timeline(db, exam_id)
+
+    audio_events = [e for e in events if e.source == "audio"]
+    transcription = []
+    voice_matches = []
+    speaker_roles = {}
+
+    for e in audio_events:
+        data = e.event_data or {}
+        if data.get("matched_text"):
+            voice_matches.append(
+                {
+                    "time": e.time_seconds,
+                    "rule_code": e.event_type,
+                    "rule_name": data.get("rule_name", ""),
+                    "phase": data.get("phase", ""),
+                    "score": data.get("score", 0),
+                    "similarity": data.get("similarity", 0),
+                    "matched_text": data.get("matched_text", ""),
+                    "matched_template": data.get("matched_template", ""),
+                    "speaker": e.actor,
+                    "speaker_role": data.get("speaker_role"),
+                    "role_correct": data.get("role_correct", True),
+                }
+            )
+
+    return {
+        "transcription": transcription,
+        "voice_matches": voice_matches,
+        "speaker_roles": speaker_roles,
+    }
+
+
 @router.get("/{exam_id}/report")
 async def get_exam_report(
     exam_id: int,

@@ -30,10 +30,6 @@ RUN pip install --no-cache-dir \
     --trusted-host mirrors.aliyun.com \
     -r /app/backend_requirements.txt
 
-# Install PyTorch with CUDA 12.1
-RUN pip install --no-cache-dir \
-    torch torchaudio \
-    --index-url https://download.pytorch.org/whl/cu121
 
 # Install AI engine requirements
 COPY ai_engine/requirements.txt /app/ai_engine_requirements.txt
@@ -46,6 +42,15 @@ RUN pip install \
     --trusted-host pypi.tuna.tsinghua.edu.cn \
     -r /app/ai_engine_requirements.txt
 
+RUN pip uninstall -y torch torchvision torchaudio || true
+
+RUN pip install --no-cache-dir \
+    torch==2.5.1+cu121 \
+    torchvision==0.20.1+cu121 \
+    torchaudio==2.5.1+cu121 \
+    --index-url https://download.pytorch.org/whl/cu121
+
+
 # Pre-download YOLO pose model
 RUN python -c "from ultralytics import YOLO; YOLO('yolov8n-pose.pt')" && \
     mkdir -p /app/models && \
@@ -53,15 +58,15 @@ RUN python -c "from ultralytics import YOLO; YOLO('yolov8n-pose.pt')" && \
 
 # Pre-download SenseVoiceSmall + VAD + Punctuation models
 RUN python -c "\
-from funasr import AutoModel; \
-AutoModel( \
+    from funasr import AutoModel; \
+    AutoModel( \
     model='iic/SenseVoiceSmall', \
     vad_model='iic/speech_fsmn_vad_zh-cn-16k-common-pytorch', \
     punc_model='iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch', \
     device='cpu', \
     hub='ms', \
     disable_update=True, \
-)"
+    )"
 
 COPY . .
 

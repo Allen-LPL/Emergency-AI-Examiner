@@ -26,13 +26,13 @@ class EventMerger:
             unified.append(
                 {
                     "time": ev.get("time", 0.0),
-                    "actor": ev.get("speaker"),
+                    "actor": ev.get("speaker", ev.get("data", {}).get("speaker")),
                     "event_type": ev.get(
                         "rule_code", ev.get("event_type", "voice_command")
                     ),
                     "source": "audio",
-                    "confidence": ev.get("confidence", 0.9),
-                    "data": ev,
+                    "confidence": ev.get("confidence", ev.get("similarity", 0.9)),
+                    "data": ev.get("data", ev),
                 }
             )
 

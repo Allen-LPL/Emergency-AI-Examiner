@@ -69,6 +69,11 @@ class ExaminationPipeline:
             "detected_equipment": [],
             "sensor_data": sensor_data or {},
             "transcription": transcription,
+            "speaker_roles": {
+                seg.get("speaker"): seg.get("speaker_role")
+                for seg in transcription
+                if seg.get("speaker")
+            },
         }
         from ai_engine.scoring.engine import ScoringEngine
 
@@ -190,8 +195,14 @@ class ExaminationPipeline:
     def _process_audio(
         self, audio_path: str
     ) -> tuple[list[dict], list[dict], list[dict]]:
+        """
+        音频处理管线: VAD → ASR → Diarization → 角色推断 → 话术模板匹配
+
+        Returns:
+            (audio_events, voice_matches, transcription)
+        """
         if not audio_path or not Path(audio_path).exists():
-            logger.warning("Audio file not available, skipping audio analysis")
+            logger.warning("音频文件不存在，跳过音频分析")
             return [], [], []
 
         device = self.config.device
@@ -203,9 +214,9 @@ class ExaminationPipeline:
 
             vad = VoiceActivityDetector()
             vad_segments = vad.detect(audio_path)
-            logger.info(f"VAD: {len(vad_segments)} speech segments")
+            logger.info(f"VAD: 检测到 {len(vad_segments)} 个语音段")
         except Exception as exc:
-            logger.warning(f"VAD failed: {exc}")
+            logger.warning(f"VAD 失败: {exc}")
 
         self._report(50, "audio_analysis", "asr", "FunASR SenseVoice 语音识别...")
         transcription = []
@@ -217,10 +228,10 @@ class ExaminationPipeline:
                 transcription = asr.transcribe_segments(audio_path, vad_segments)
             else:
                 transcription = asr.transcribe(audio_path)
-            logger.info(f"ASR: {len(transcription)} segments")
+            logger.info(f"ASR: 转写 {len(transcription)} 段")
             del asr
         except Exception as exc:
-            logger.warning(f"ASR failed: {exc}")
+            logger.warning(f"ASR 失败: {exc}")
 
         self._report(
             58, "audio_analysis", "diarization", "pyannote.audio 说话人分离..."
@@ -238,17 +249,33 @@ class ExaminationPipeline:
                 transcription = diarizer.assign_speakers(transcription, diarization)
             del diarizer
         except Exception as exc:
-            logger.warning(f"Diarization failed: {exc}")
+            logger.warning(f"说话人分离失败: {exc}")
 
         self._report(
-            65, "audio_analysis", "keyword_matching", "关键词模板匹配 (13条规则)..."
+            62,
+            "audio_analysis",
+            "role_inference",
+            "推断说话人角色(医生/护士/驾驶员)...",
+        )
+        speaker_roles = {}
+        try:
+            from ai_engine.audio.role_inferrer import SpeakerRoleInferrer
+
+            inferrer = SpeakerRoleInferrer()
+            speaker_roles = inferrer.infer_roles(transcription)
+            transcription = inferrer.apply_roles(transcription, speaker_roles)
+        except Exception as exc:
+            logger.warning(f"角色推断失败: {exc}")
+
+        self._report(
+            65, "audio_analysis", "template_matching", "话术模板匹配 (15条规则)..."
         )
         voice_matches = []
         audio_events = []
         try:
-            from ai_engine.audio.keyword_matcher import KeywordMatcher
+            from ai_engine.audio.template_matcher import TemplateMatcher
 
-            matcher = KeywordMatcher()
+            matcher = TemplateMatcher()
             voice_matches = matcher.match_transcript(transcription)
             for match in voice_matches:
                 audio_events.append(
@@ -256,19 +283,23 @@ class ExaminationPipeline:
                         "time": match["time"],
                         "event_type": match["rule_code"],
                         "source": "audio",
-                        "confidence": 0.9,
+                        "confidence": match["similarity"],
                         "data": match,
                     }
                 )
-            logger.info(f"Keywords: {len(voice_matches)} rules matched")
+            logger.info(f"话术匹配: {len(voice_matches)} 条规则命中")
         except Exception as exc:
-            logger.warning(f"Keyword matching failed: {exc}")
+            logger.warning(f"话术模板匹配失败: {exc}")
 
         self._report(
             68,
             "audio_analysis",
             "complete",
-            f"音频分析完成: {len(transcription)}段转写, {len(voice_matches)}条关键词匹配",
+            (
+                f"音频分析完成: {len(transcription)}段转写, "
+                f"{len(set(s.get('speaker_role', '') for s in transcription) - {'', 'unknown'})}种角色, "
+                f"{len(voice_matches)}条话术匹配"
+            ),
         )
         return audio_events, voice_matches, transcription
 

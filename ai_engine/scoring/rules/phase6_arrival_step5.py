@@ -9,14 +9,7 @@ class ScoopStretcherTransfer(ScoringRule):
     max_score = 1.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        ev = timeline.find_first_event("stretcher_transfer")
-        if ev:
-            return self._result(1.0)
-        equipment = context.get("detected_equipment", [])
-        found = any(e.get("class_name") == "scoop_stretcher" for e in equipment)
-        if found:
-            return self._result(1.0)
-        return self._result(0.0, "未检测到铲式担架转运")
+        return self._result(1.0, evidence={"note": "担架默认携带，自动满分"})
 
 
 class TransferConsent(ScoringRule):
@@ -26,11 +19,22 @@ class TransferConsent(ScoringRule):
     max_score = 1.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        voice_matches = context.get("voice_matches", [])
-        found = any(m.get("rule_code") == "transfer_consent" for m in voice_matches)
-        if found:
-            return self._result(1.0)
-        return self._result(0.0, "未听到转运知情告知口令(同意/签/字)")
+        score, match = self._compute_voice_score(context)
+        if not match:
+            return self._result(0.0, "未听到转运知情告知口令")
+
+        evidence = {
+            "similarity": match.get("similarity", 0.0),
+            "matched_text": match.get("matched_text"),
+            "speaker_role": match.get("speaker_role"),
+        }
+        if score >= self.max_score * 0.6:
+            return self._result(score, evidence=evidence)
+        return self._result(
+            score,
+            f"话术匹配度偏低({match.get('similarity', 0.0):.0%})",
+            evidence,
+        )
 
 
 class BodyCameraWarning(ScoringRule):
@@ -40,10 +44,7 @@ class BodyCameraWarning(ScoringRule):
     max_score = 1.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        manual = context.get("manual_scores", {})
-        if "body_camera" in manual:
-            return self._result(float(manual["body_camera"]))
-        return self._result(0.0, "需人工评估(执法记录仪)")
+        return self._result(1.0, evidence={"note": "执法记录仪默认开启，自动满分"})
 
 
 class TransferMonitoring(ScoringRule):
@@ -53,11 +54,22 @@ class TransferMonitoring(ScoringRule):
     max_score = 1.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        voice_matches = context.get("voice_matches", [])
-        found = any(m.get("rule_code") == "transfer_monitoring" for m in voice_matches)
-        if found:
-            return self._result(1.0)
-        return self._result(0.0, "未听到监护相关口令(血压/氧饱和度/心律/生命体征)")
+        score, match = self._compute_voice_score(context)
+        if not match:
+            return self._result(0.0, "未听到监护相关口令")
+
+        evidence = {
+            "similarity": match.get("similarity", 0.0),
+            "matched_text": match.get("matched_text"),
+            "speaker_role": match.get("speaker_role"),
+        }
+        if score >= self.max_score * 0.6:
+            return self._result(score, evidence=evidence)
+        return self._result(
+            score,
+            f"话术匹配度偏低({match.get('similarity', 0.0):.0%})",
+            evidence,
+        )
 
 
 class HumanisticCare(ScoringRule):
@@ -67,11 +79,22 @@ class HumanisticCare(ScoringRule):
     max_score = 1.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        voice_matches = context.get("voice_matches", [])
-        found = any(m.get("rule_code") == "humanistic_care" for m in voice_matches)
-        if found:
-            return self._result(1.0)
-        return self._result(0.0, "未听到人文关怀口令(抢救/尽力)")
+        score, match = self._compute_voice_score(context)
+        if not match:
+            return self._result(0.0, "未听到人文关怀口令")
+
+        evidence = {
+            "similarity": match.get("similarity", 0.0),
+            "matched_text": match.get("matched_text"),
+            "speaker_role": match.get("speaker_role"),
+        }
+        if score >= self.max_score * 0.6:
+            return self._result(score, evidence=evidence)
+        return self._result(
+            score,
+            f"话术匹配度偏低({match.get('similarity', 0.0):.0%})",
+            evidence,
+        )
 
 
 PHASE6_RULES = [

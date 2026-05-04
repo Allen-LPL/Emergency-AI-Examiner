@@ -42,11 +42,30 @@ class EvaluateRhythm(ScoringRule):
     max_score = 2.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        voice_matches = context.get("voice_matches", [])
-        found = any(m.get("rule_code") == "evaluate_rhythm" for m in voice_matches)
-        if found:
-            return self._result(2.0)
-        return self._result(0.0, "未听到'离开/让开'评估口令")
+        score, match = self._compute_voice_score(context)
+        if not match:
+            return self._result(0.0, "未听到'离开/让开'评估口令")
+
+        video_confirmed, video_event = self._check_video_confirm(
+            timeline,
+            "kneeling",
+            match.get("time", 0.0),
+            window=5.0,
+        )
+        evidence = {
+            "similarity": match.get("similarity", 0.0),
+            "matched_text": match.get("matched_text"),
+            "speaker_role": match.get("speaker_role"),
+            "video_confirmed": video_confirmed,
+            "video_event": video_event,
+        }
+        if score >= self.max_score * 0.6:
+            return self._result(score, evidence=evidence)
+        return self._result(
+            score,
+            f"话术匹配度偏低({match.get('similarity', 0.0):.0%})",
+            evidence,
+        )
 
 
 class IVAccess(ScoringRule):
@@ -56,11 +75,22 @@ class IVAccess(ScoringRule):
     max_score = 2.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        voice_matches = context.get("voice_matches", [])
-        found = any(m.get("rule_code") == "iv_access" for m in voice_matches)
-        if found:
-            return self._result(2.0)
-        return self._result(0.0, "未听到开通静脉通路口令")
+        score, match = self._compute_voice_score(context)
+        if not match:
+            return self._result(0.0, "未听到开通静脉通路口令")
+
+        evidence = {
+            "similarity": match.get("similarity", 0.0),
+            "matched_text": match.get("matched_text"),
+            "speaker_role": match.get("speaker_role"),
+        }
+        if score >= self.max_score * 0.6:
+            return self._result(score, evidence=evidence)
+        return self._result(
+            score,
+            f"话术匹配度偏低({match.get('similarity', 0.0):.0%})",
+            evidence,
+        )
 
 
 class EpinephrineAdmin(ScoringRule):
@@ -70,11 +100,22 @@ class EpinephrineAdmin(ScoringRule):
     max_score = 2.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        voice_matches = context.get("voice_matches", [])
-        found = any(m.get("rule_code") == "epinephrine_admin" for m in voice_matches)
-        if found:
-            return self._result(2.0)
-        return self._result(0.0, "未听到肾上腺素推注口令")
+        score, match = self._compute_voice_score(context)
+        if not match:
+            return self._result(0.0, "未听到肾上腺素推注口令")
+
+        evidence = {
+            "similarity": match.get("similarity", 0.0),
+            "matched_text": match.get("matched_text"),
+            "speaker_role": match.get("speaker_role"),
+        }
+        if score >= self.max_score * 0.6:
+            return self._result(score, evidence=evidence)
+        return self._result(
+            score,
+            f"话术匹配度偏低({match.get('similarity', 0.0):.0%})",
+            evidence,
+        )
 
 
 class ApplyConductivePaste(ScoringRule):
@@ -84,10 +125,7 @@ class ApplyConductivePaste(ScoringRule):
     max_score = 2.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        ev = timeline.find_first_event("apply_conductive_paste")
-        if ev:
-            return self._result(2.0)
-        return self._result(0.0, "未检测到涂抹导电糊动作")
+        return self._result(2.0, evidence={"note": "设备默认携带导电糊，自动满分"})
 
 
 class PastePositionCorrect(ScoringRule):
@@ -97,12 +135,7 @@ class PastePositionCorrect(ScoringRule):
     max_score = 2.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        ev = timeline.find_first_event("apply_conductive_paste")
-        if ev:
-            return self._result(
-                2.0, evidence={"note": "检测到导电糊操作，默认位置正确"}
-            )
-        return self._result(0.0, "未检测到导电糊操作")
+        return self._result(2.0, evidence={"note": "导电糊位置默认正确，自动满分"})
 
 
 class EnergyCorrect(ScoringRule):
@@ -112,10 +145,22 @@ class EnergyCorrect(ScoringRule):
     max_score = 2.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        ev = timeline.find_first_event("apply_conductive_paste")
-        if ev:
-            return self._result(2.0, evidence={"note": "导电糊操作正确后默认给分"})
-        return self._result(0.0, "未检测到除颤操作")
+        score, match = self._compute_voice_score(context, "energy_correct")
+        if not match:
+            return self._result(0.0, "未听到除颤能量相关口令")
+
+        evidence = {
+            "similarity": match.get("similarity", 0.0),
+            "matched_text": match.get("matched_text"),
+            "speaker_role": match.get("speaker_role"),
+        }
+        if score >= self.max_score * 0.6:
+            return self._result(score, evidence=evidence)
+        return self._result(
+            score,
+            f"话术匹配度偏低({match.get('similarity', 0.0):.0%})",
+            evidence,
+        )
 
 
 class ClearBeforeDefib(ScoringRule):
@@ -125,11 +170,22 @@ class ClearBeforeDefib(ScoringRule):
     max_score = 2.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        voice_matches = context.get("voice_matches", [])
-        found = any(m.get("rule_code") == "clear_before_defib" for m in voice_matches)
-        if found:
-            return self._result(2.0)
-        return self._result(0.0, "未听到除颤前'离开/让开'口令")
+        score, match = self._compute_voice_score(context)
+        if not match:
+            return self._result(0.0, "未听到除颤前'离开/让开'口令")
+
+        evidence = {
+            "similarity": match.get("similarity", 0.0),
+            "matched_text": match.get("matched_text"),
+            "speaker_role": match.get("speaker_role"),
+        }
+        if score >= self.max_score * 0.6:
+            return self._result(score, evidence=evidence)
+        return self._result(
+            score,
+            f"话术匹配度偏低({match.get('similarity', 0.0):.0%})",
+            evidence,
+        )
 
 
 class DefibrillationSkilled(ScoringRule):
@@ -148,7 +204,7 @@ class DefibrillationSkilled(ScoringRule):
         )
         if max_gap > 15:
             return self._result(0.0, f"除颤期间中断过长({max_gap:.1f}s > 15s)")
-        return self._result(2.0)
+        return self._result(2.0, evidence={"max_gap": round(max_gap, 1)})
 
 
 class CompressionDuringDefib(ScoringRule):
@@ -190,11 +246,22 @@ class InformedConsent(ScoringRule):
     max_score = 1.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        voice_matches = context.get("voice_matches", [])
-        found = any(m.get("rule_code") == "informed_consent" for m in voice_matches)
-        if found:
-            return self._result(1.0)
-        return self._result(0.0, "未听到知情告知签字口令")
+        score, match = self._compute_voice_score(context)
+        if not match:
+            return self._result(0.0, "未听到知情告知签字口令")
+
+        evidence = {
+            "similarity": match.get("similarity", 0.0),
+            "matched_text": match.get("matched_text"),
+            "speaker_role": match.get("speaker_role"),
+        }
+        if score >= self.max_score * 0.6:
+            return self._result(score, evidence=evidence)
+        return self._result(
+            score,
+            f"话术匹配度偏低({match.get('similarity', 0.0):.0%})",
+            evidence,
+        )
 
 
 class CooperationSmooth(ScoringRule):
@@ -204,7 +271,7 @@ class CooperationSmooth(ScoringRule):
     max_score = 2.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        return self._result(2.0, evidence={"note": "需人工评估，默认给分"})
+        return self._result(2.0, evidence={"note": "配合熟练默认达标，自动满分"})
 
 
 PHASE4_RULES = [

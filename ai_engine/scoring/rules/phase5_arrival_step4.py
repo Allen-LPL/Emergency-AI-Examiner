@@ -14,7 +14,8 @@ class ContinueCompression(ScoringRule):
         if cycles >= 5:
             return self._result(2.0)
         return self._result(
-            0.0, f"传感器显示{cycles}个循环(需5个)" if cycles else "传感器数据缺失"
+            0.0,
+            f"传感器显示{cycles}个循环(需5个)" if cycles else "传感器数据缺失",
         )
 
 
@@ -25,11 +26,22 @@ class ReEvaluate(ScoringRule):
     max_score = 1.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        voice_matches = context.get("voice_matches", [])
-        found = any(m.get("rule_code") == "re_evaluate" for m in voice_matches)
-        if found:
-            return self._result(1.0)
-        return self._result(0.0, "未听到再次评估口令(离开/让开)")
+        score, match = self._compute_voice_score(context)
+        if not match:
+            return self._result(0.0, "未听到再次评估口令(离开/让开)")
+
+        evidence = {
+            "similarity": match.get("similarity", 0.0),
+            "matched_text": match.get("matched_text"),
+            "speaker_role": match.get("speaker_role"),
+        }
+        if score >= self.max_score * 0.6:
+            return self._result(score, evidence=evidence)
+        return self._result(
+            score,
+            f"话术匹配度偏低({match.get('similarity', 0.0):.0%})",
+            evidence,
+        )
 
 
 class CompressionHandover(ScoringRule):
@@ -39,11 +51,30 @@ class CompressionHandover(ScoringRule):
     max_score = 2.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        voice_matches = context.get("voice_matches", [])
-        found = any(m.get("rule_code") == "compression_handover" for m in voice_matches)
-        if found:
-            return self._result(2.0)
-        return self._result(0.0, "未听到按压更换口令(替/换/按压)")
+        score, match = self._compute_voice_score(context)
+        if not match:
+            return self._result(0.0, "未听到按压更换口令(替/换/按压)")
+
+        video_confirmed, video_event = self._check_video_confirm(
+            timeline,
+            "standing_nearby",
+            match.get("time", 0.0),
+            window=5.0,
+        )
+        evidence = {
+            "similarity": match.get("similarity", 0.0),
+            "matched_text": match.get("matched_text"),
+            "speaker_role": match.get("speaker_role"),
+            "video_confirmed": video_confirmed,
+            "video_event": video_event,
+        }
+        if score >= self.max_score * 0.6:
+            return self._result(score, evidence=evidence)
+        return self._result(
+            score,
+            f"话术匹配度偏低({match.get('similarity', 0.0):.0%})",
+            evidence,
+        )
 
 
 PHASE5_RULES = [

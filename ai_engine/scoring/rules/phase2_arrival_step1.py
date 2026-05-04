@@ -9,10 +9,7 @@ class EquipmentPlacement(ScoringRule):
     max_score = 1.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        ev = timeline.find_first_event("equipment_placement")
-        if ev:
-            return self._result(1.0)
-        return self._result(0.0, "未检测到设备放置动作")
+        return self._result(1.0, evidence={"note": "设备默认放置，自动满分"})
 
 
 class InformFamily(ScoringRule):
@@ -22,19 +19,33 @@ class InformFamily(ScoringRule):
     max_score = 1.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        voice_matches = context.get("voice_matches", [])
-        match = next(
-            (m for m in voice_matches if m.get("rule_code") == "inform_family"), None
-        )
+        score, match = self._compute_voice_score(context)
         if not match:
-            return self._result(0.0, "未听到告知病情口令(关键词:停/救)")
+            return self._result(0.0, "未听到告知病情口令")
 
         phases = timeline.detect_phases()
-        phase_start = phases.get("phase2_arrival_step1", {}).get("start_time", 0)
-        time_diff = match.get("time", 0) - phase_start
+        phase_start = phases.get("phase2_arrival_step1", {}).get("start_time")
+        if phase_start is None:
+            equip_event = timeline.find_first_event("equipment_placement")
+            phase_start = equip_event["time"] if equip_event else 0.0
+
+        time_diff = match.get("time", 0.0) - phase_start
+        evidence = {
+            "similarity": match.get("similarity", 0.0),
+            "matched_text": match.get("matched_text"),
+            "speaker_role": match.get("speaker_role"),
+            "time_diff": round(time_diff, 1),
+        }
         if time_diff > 20:
-            return self._result(0.0, f"告知病情超时({time_diff:.1f}s > 20s)")
-        return self._result(1.0)
+            return self._result(0.0, f"告知病情超时({time_diff:.1f}s > 20s)", evidence)
+
+        if score >= self.max_score * 0.6:
+            return self._result(score, evidence=evidence)
+        return self._result(
+            score,
+            f"话术匹配度偏低({match.get('similarity', 0.0):.0%})",
+            evidence,
+        )
 
 
 class CompressionStartFast(ScoringRule):

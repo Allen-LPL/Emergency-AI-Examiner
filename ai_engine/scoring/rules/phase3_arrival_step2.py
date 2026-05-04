@@ -11,13 +11,30 @@ class BreathingBagPrep(ScoringRule):
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
         sensor = context.get("sensor_data", {})
         ventilation_volume = sensor.get("ventilation_volume_ml")
-        if ventilation_volume is not None:
-            if 500 <= ventilation_volume <= 600:
-                return self._result(3.0)
-            return self._result(
-                0.0, f"通气量不达标({ventilation_volume}ml，标准500-600ml)"
-            )
-        return self._result(0.0, "传感器数据缺失，无法评估通气量")
+        ventilation_time = sensor.get("ventilation_time", 0.0)
+        video_confirmed, video_event = self._check_video_confirm(
+            timeline,
+            "ventilation_pose",
+            ventilation_time,
+            window=5.0,
+        )
+        evidence = {
+            "ventilation_volume_ml": ventilation_volume,
+            "video_confirmed": video_confirmed,
+            "video_event": video_event,
+        }
+
+        if ventilation_volume is None:
+            return self._result(0.0, "传感器数据缺失，无法评估通气量", evidence)
+
+        if 500 <= ventilation_volume <= 600:
+            return self._result(3.0, evidence=evidence)
+
+        return self._result(
+            0.0,
+            f"通气量不达标({ventilation_volume}ml，标准500-600ml)",
+            evidence,
+        )
 
 
 class ECGConnection(ScoringRule):
@@ -27,14 +44,30 @@ class ECGConnection(ScoringRule):
     max_score = 3.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        ev = timeline.find_first_event("ecg_connection")
-        if ev:
-            return self._result(3.0)
-        video_events = timeline.get_events(source="video")
-        has_monitor = any("monitor" in e.get("event_type", "") for e in video_events)
-        if has_monitor:
-            return self._result(3.0)
-        return self._result(0.0, "未检测到心电监护连接")
+        score, match = self._compute_voice_score(context, "ecg_connection")
+        if not match:
+            return self._result(0.0, "未听到心电监护连接相关口令")
+
+        video_confirmed, video_event = self._check_video_confirm(
+            timeline,
+            "ecg_connection",
+            match.get("time", 0.0),
+            window=5.0,
+        )
+        evidence = {
+            "similarity": match.get("similarity", 0.0),
+            "matched_text": match.get("matched_text"),
+            "speaker_role": match.get("speaker_role"),
+            "video_confirmed": video_confirmed,
+            "video_event": video_event,
+        }
+        if score >= self.max_score * 0.6:
+            return self._result(score, evidence=evidence)
+        return self._result(
+            score,
+            f"话术匹配度偏低({match.get('similarity', 0.0):.0%})",
+            evidence,
+        )
 
 
 class ECGPrint(ScoringRule):
@@ -44,10 +77,22 @@ class ECGPrint(ScoringRule):
     max_score = 1.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        ev = timeline.find_first_event("ecg_print")
-        if ev:
-            return self._result(1.0)
-        return self._result(0.0, "未检测到心电图打印")
+        score, match = self._compute_voice_score(context)
+        if not match:
+            return self._result(0.0, "未听到心电图打印相关口令")
+
+        evidence = {
+            "similarity": match.get("similarity", 0.0),
+            "matched_text": match.get("matched_text"),
+            "speaker_role": match.get("speaker_role"),
+        }
+        if score >= self.max_score * 0.6:
+            return self._result(score, evidence=evidence)
+        return self._result(
+            score,
+            f"话术匹配度偏低({match.get('similarity', 0.0):.0%})",
+            evidence,
+        )
 
 
 class ECGSign(ScoringRule):
@@ -57,11 +102,22 @@ class ECGSign(ScoringRule):
     max_score = 1.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        voice_matches = context.get("voice_matches", [])
-        found = any(m.get("rule_code") == "ecg_sign" for m in voice_matches)
-        if found:
-            return self._result(1.0)
-        return self._result(0.0, "未听到签字口令")
+        score, match = self._compute_voice_score(context)
+        if not match:
+            return self._result(0.0, "未听到签字口令")
+
+        evidence = {
+            "similarity": match.get("similarity", 0.0),
+            "matched_text": match.get("matched_text"),
+            "speaker_role": match.get("speaker_role"),
+        }
+        if score >= self.max_score * 0.6:
+            return self._result(score, evidence=evidence)
+        return self._result(
+            score,
+            f"话术匹配度偏低({match.get('similarity', 0.0):.0%})",
+            evidence,
+        )
 
 
 class SmoothCooperation2(ScoringRule):
@@ -82,7 +138,7 @@ class SmoothCooperation2(ScoringRule):
 
         if max_gap > 15:
             return self._result(0.0, f"按压中断过长({max_gap:.1f}s > 15s)")
-        return self._result(2.0)
+        return self._result(2.0, evidence={"max_gap": round(max_gap, 1)})
 
 
 PHASE3_RULES = [

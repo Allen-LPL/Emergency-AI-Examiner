@@ -9,11 +9,7 @@ class CarryDefibrillator(ScoringRule):
     max_score = 1.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        equipment = context.get("detected_equipment", [])
-        found = any(e.get("class_name") == "defibrillator" for e in equipment)
-        if found:
-            return self._result(1.0)
-        return self._result(0.0, "未检测到除颤监护一体机")
+        return self._result(1.0, evidence={"note": "设备默认携带，自动满分"})
 
 
 class CarryMedicineBox(ScoringRule):
@@ -23,11 +19,7 @@ class CarryMedicineBox(ScoringRule):
     max_score = 1.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        equipment = context.get("detected_equipment", [])
-        found = any(e.get("class_name") == "medicine_box" for e in equipment)
-        if found:
-            return self._result(1.0)
-        return self._result(0.0, "未检测到急救药箱")
+        return self._result(1.0, evidence={"note": "设备默认携带，自动满分"})
 
 
 class CarryBreathingBag(ScoringRule):
@@ -37,11 +29,7 @@ class CarryBreathingBag(ScoringRule):
     max_score = 1.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        equipment = context.get("detected_equipment", [])
-        found = any(e.get("class_name") == "breathing_bag" for e in equipment)
-        if found:
-            return self._result(1.0)
-        return self._result(0.0, "未检测到呼吸球囊")
+        return self._result(1.0, evidence={"note": "设备默认携带，自动满分"})
 
 
 class RunningToScene(ScoringRule):
@@ -53,7 +41,7 @@ class RunningToScene(ScoringRule):
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
         running = timeline.find_events_by_type("running")
         if running:
-            return self._result(1.0)
+            return self._result(1.0, evidence={"count": len(running)})
         return self._result(0.0, "未检测到跑步动作")
 
 
@@ -64,11 +52,22 @@ class EnvironmentSafety(ScoringRule):
     max_score = 1.0
 
     def evaluate(self, timeline: Timeline, context: dict) -> dict:
-        voice_matches = context.get("voice_matches", [])
-        found = any(m.get("rule_code") == "environment_safety" for m in voice_matches)
-        if found:
-            return self._result(1.0)
-        return self._result(0.0, "未听到'安全'口令")
+        score, match = self._compute_voice_score(context)
+        if not match:
+            return self._result(0.0, "未听到'安全'相关口令")
+
+        evidence = {
+            "similarity": match.get("similarity", 0.0),
+            "matched_text": match.get("matched_text"),
+            "speaker_role": match.get("speaker_role"),
+        }
+        if score >= self.max_score * 0.6:
+            return self._result(score, evidence=evidence)
+        return self._result(
+            score,
+            f"话术匹配度偏低({match.get('similarity', 0.0):.0%})",
+            evidence,
+        )
 
 
 PHASE1_RULES = [

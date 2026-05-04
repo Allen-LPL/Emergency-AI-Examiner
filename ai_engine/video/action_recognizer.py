@@ -1,8 +1,11 @@
 import numpy as np
 from loguru import logger
 
+KP_NOSE = 0
 KP_LEFT_SHOULDER = 5
 KP_RIGHT_SHOULDER = 6
+KP_LEFT_WRIST = 9
+KP_RIGHT_WRIST = 10
 KP_LEFT_HIP = 11
 KP_RIGHT_HIP = 12
 
@@ -21,6 +24,9 @@ class ActionRecognizer:
         events.extend(self._detect_running(pose_sequence, timestamps))
         events.extend(self._detect_chest_compression(pose_sequence, timestamps))
         events.extend(self._detect_kneeling(pose_sequence, timestamps))
+        events.extend(self._detect_ventilation_pose(pose_sequence, timestamps))
+        events.extend(self._detect_standing_nearby(pose_sequence, timestamps))
+        logger.info(f"动作识别完成，共生成{len(events)}个事件")
         return sorted(events, key=lambda e: e["time"])
 
     def _detect_running(
@@ -122,6 +128,70 @@ class ActionRecognizer:
                 )
 
         return self._deduplicate_events(events, min_gap=3.0)
+
+    def _detect_ventilation_pose(
+        self, pose_sequence: list[dict], timestamps: list[float]
+    ) -> list[dict]:
+        events = []
+        for i, pose_data in enumerate(pose_sequence):
+            kps = pose_data.get("keypoints")
+            if kps is None or (isinstance(kps, np.ndarray) and kps.shape[0] < 17):
+                continue
+
+            nose = kps[KP_NOSE]
+            l_wrist = kps[KP_LEFT_WRIST]
+            r_wrist = kps[KP_RIGHT_WRIST]
+            if nose[2] < 0.3:
+                continue
+
+            for wrist in [l_wrist, r_wrist]:
+                if wrist[2] < 0.3:
+                    continue
+                dist = ((wrist[0] - nose[0]) ** 2 + (wrist[1] - nose[1]) ** 2) ** 0.5
+                bbox = pose_data.get("bbox", [0, 0, 0, 100])
+                bbox_height = bbox[3] - bbox[1] if len(bbox) >= 4 else 100
+
+                # 手腕进入面部附近区域时，认为可能正在做球囊通气动作。
+                if dist < bbox_height * 0.3:
+                    events.append(
+                        {
+                            "time": timestamps[i],
+                            "action": "ventilation_pose",
+                            "confidence": 0.6,
+                            "actor_track_id": pose_data.get("track_id"),
+                        }
+                    )
+                    break
+
+        return self._deduplicate_events(events, min_gap=3.0)
+
+    def _detect_standing_nearby(
+        self, pose_sequence: list[dict], timestamps: list[float]
+    ) -> list[dict]:
+        events = []
+        for i, pose_data in enumerate(pose_sequence):
+            kps = pose_data.get("keypoints")
+            if kps is None or (isinstance(kps, np.ndarray) and kps.shape[0] < 17):
+                continue
+
+            hip_y = (kps[KP_LEFT_HIP][1] + kps[KP_RIGHT_HIP][1]) / 2
+            shoulder_y = (kps[KP_LEFT_SHOULDER][1] + kps[KP_RIGHT_SHOULDER][1]) / 2
+            bbox = pose_data.get("bbox", [0, 0, 0, 100])
+            bbox_height = bbox[3] - bbox[1] if len(bbox) >= 4 else 100
+            hip_ratio = (hip_y - shoulder_y) / bbox_height if bbox_height > 0 else 0
+
+            # 躯干比例较小通常表示人物处于站立观察状态，可作为换人辅证。
+            if 0.1 < hip_ratio < 0.25:
+                events.append(
+                    {
+                        "time": timestamps[i],
+                        "action": "standing_nearby",
+                        "confidence": 0.5,
+                        "actor_track_id": pose_data.get("track_id"),
+                    }
+                )
+
+        return self._deduplicate_events(events, min_gap=5.0)
 
     def detect_chest_compression_cycles(
         self, pose_sequence: list[dict], timestamps: list[float]

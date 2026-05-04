@@ -117,9 +117,20 @@ class PipelineTests(unittest.TestCase):
             def assign_speakers(self, transcription, diarization):
                 return [{**transcription[0], "speaker": "SPEAKER_00"}]
 
+        class FakeRoleInferrer:
+            def infer_roles(self, transcription):
+                return {"SPEAKER_00": "doctor"}
+
+            def apply_roles(self, transcription, roles):
+                return [{**transcription[0], "speaker_role": roles["SPEAKER_00"]}]
+
         class FakeMatcher:
             def match_transcript(self, transcription):
-                return [{"time": 0.0, "rule_code": "R1"}]
+                if transcription[0]["speaker_role"] != "doctor":
+                    raise AssertionError(
+                        "speaker roles were not applied before matching"
+                    )
+                return [{"time": 0.0, "rule_code": "R1", "similarity": 0.88}]
 
         class FakeMerger:
             def merge(self, video_events, audio_events):
@@ -137,10 +148,14 @@ class PipelineTests(unittest.TestCase):
 
         class FakeScoringEngine:
             def score(self, timeline, context):
-                if context["voice_matches"] != [{"time": 0.0, "rule_code": "R1"}]:
+                if context["voice_matches"] != [
+                    {"time": 0.0, "rule_code": "R1", "similarity": 0.88}
+                ]:
                     raise AssertionError("voice matches were not forwarded")
                 if context["transcription"][0]["speaker"] != "SPEAKER_00":
                     raise AssertionError("speaker labels were not assigned")
+                if context["speaker_roles"] != {"SPEAKER_00": "doctor"}:
+                    raise AssertionError("speaker roles were not forwarded")
                 return {"total_score": 88.5}
 
         cleanup_calls = []
@@ -162,8 +177,11 @@ class PipelineTests(unittest.TestCase):
             "ai_engine.audio.diarizer": types.SimpleNamespace(
                 SpeakerDiarizer=FakeDiarizer
             ),
-            "ai_engine.audio.keyword_matcher": types.SimpleNamespace(
-                KeywordMatcher=FakeMatcher
+            "ai_engine.audio.role_inferrer": types.SimpleNamespace(
+                SpeakerRoleInferrer=FakeRoleInferrer
+            ),
+            "ai_engine.audio.template_matcher": types.SimpleNamespace(
+                TemplateMatcher=FakeMatcher
             ),
             "ai_engine.fusion.event_merger": types.SimpleNamespace(
                 EventMerger=FakeMerger
@@ -195,7 +213,10 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(progress_events[0]["stage"], "preprocessing")
         self.assertEqual(progress_events[-1]["substep"], "complete")
         self.assertTrue(
-            any(event["substep"] == "keyword_matching" for event in progress_events)
+            any(event["substep"] == "role_inference" for event in progress_events)
+        )
+        self.assertTrue(
+            any(event["substep"] == "template_matching" for event in progress_events)
         )
 
 

@@ -61,6 +61,39 @@ class Timeline:
     def find_events_by_type(self, event_type: str) -> list[dict]:
         return [e for e in self.events if e["event_type"] == event_type]
 
+    def find_event_near(
+        self, event_type: str, center_time: float, window: float = 5.0
+    ) -> dict | None:
+        """
+        在中心时间点附近窗口内查找最近事件。
+
+        参数:
+            event_type: 事件类型
+            center_time: 中心时间点（秒）
+            window: 时间窗口半径（秒）
+
+        返回:
+            窗口内最近的匹配事件，若不存在则返回空值
+        """
+        candidates = [
+            e
+            for e in self.events
+            if e["event_type"] == event_type and abs(e["time"] - center_time) <= window
+        ]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda e: abs(e["time"] - center_time))
+
+    def find_events_near(
+        self, event_type: str, center_time: float, window: float = 5.0
+    ) -> list[dict]:
+        """在时间窗口内查找全部指定类型事件。"""
+        return [
+            e
+            for e in self.events
+            if e["event_type"] == event_type and abs(e["time"] - center_time) <= window
+        ]
+
     def to_list(self) -> list[dict]:
         return list(self.events)
 

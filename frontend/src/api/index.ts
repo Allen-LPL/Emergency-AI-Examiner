@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { Exam, ExamStatus, ScoreResult, ExamEvent, SensorData } from '../types'
+import type { Exam, ExamStatus, ScoreResult, ExamEvent, SensorData, ExamDebugData } from '../types'
 
 const api = axios.create({
   baseURL: '/api/v1',
@@ -56,6 +56,15 @@ export const getSensorData = async (id: number): Promise<SensorData | null> => {
 export const generateMockSensor = async (id: number): Promise<SensorData> => {
   const response = await api.post<SensorData>(`/sensor/mock/${id}`)
   return response.data
+}
+
+export const getExamDebugData = async (id: number): Promise<ExamDebugData | null> => {
+  try {
+    const response = await api.get<ExamDebugData>(`/exam/${id}/debug`)
+    return response.data
+  } catch {
+    return null
+  }
 }
 
 export const getExams = async (page = 1, pageSize = 10): Promise<{ items: Exam[]; total: number }> => {
