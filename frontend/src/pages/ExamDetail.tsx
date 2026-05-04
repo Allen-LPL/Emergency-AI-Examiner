@@ -288,7 +288,19 @@ const ExamDetail: React.FC = () => {
         key: 'rule',
         render: (_: unknown, record: ExamEvent) => {
           const ruleCode = record.event_data?.rule_code as string;
-          return <Tag color="green">{ruleCode || record.event_type}</Tag>;
+          const tag = ruleCode || record.event_type;
+          const color = record.event_type.startsWith('audio_transcript') ? 'blue' : 'green';
+          return <Tag color={color}>{tag}</Tag>;
+        }
+      },
+      {
+        title: '角色',
+        key: 'role',
+        width: 100,
+        render: (_: unknown, record: ExamEvent) => {
+          const role = record.event_data?.speaker_role as string | undefined;
+          if (!role) return '-';
+          return <Tag color="purple">{role}</Tag>;
         }
       },
       { 
@@ -324,6 +336,49 @@ const ExamDetail: React.FC = () => {
           />
         </Card>
       </div>
+    );
+  };
+
+  const renderAudioTranscriptSummary = () => {
+    const fullEvent = events.find(e => e.event_type === 'audio_transcript_full');
+    if (!fullEvent) return null;
+
+    const fullText = (fullEvent.event_data?.text as string | undefined) || '';
+    const roleText = (fullEvent.event_data?.role_text as Record<string, string> | undefined) || {};
+
+    const roleLabelMap: Record<string, string> = {
+      doctor: '医生',
+      nurse: '护士',
+      driver: '驾驶员',
+    };
+
+    const roleOrder = ['doctor', 'nurse', 'driver'];
+
+    return (
+      <Card title="音频总文本" className="shadow-sm border-gray-200">
+        <div className="space-y-6">
+          <div>
+            <div className="text-sm text-gray-500 mb-2">完整转写文本</div>
+            <div className="bg-gray-50 border border-gray-100 rounded-lg p-4 text-gray-700 leading-7 whitespace-pre-wrap max-h-56 overflow-y-auto">
+              {fullText || '暂无完整音频文本'}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-sm text-gray-500 mb-2">分角色文本</div>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              {roleOrder.map((role) => (
+                <div key={role} className="border border-gray-100 rounded-lg p-4 bg-white">
+                  <div className="font-medium text-gray-800 mb-2">{roleLabelMap[role]}</div>
+                  <div className="text-sm text-gray-600 whitespace-pre-wrap max-h-48 overflow-y-auto leading-6">
+                    {roleText[role] || '暂无'}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </Card>
     );
   };
 
@@ -437,6 +492,8 @@ const ExamDetail: React.FC = () => {
               <TemplateMatchView matches={debugData.voice_matches} />
             </div>
           )}
+
+          {renderAudioTranscriptSummary()}
 
           <div className="space-y-4">
             <h3 className="text-lg font-medium text-gray-800 m-0">视频与音频事件</h3>

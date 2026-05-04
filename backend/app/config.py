@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
 
     upload_dir: str = "./uploads"
+    output_dir: str = "./outputs"
     max_upload_size_mb: int = 2048
 
     debug: bool = True

@@ -89,11 +89,22 @@ async def list_user_exams(
 
 def save_exam_events_sync(db_session, exam_id: int, events: list[dict]) -> None:
     for event in events:
+        event_type = (
+            event.get("event_type")
+            or event.get("rule_code")
+            or event.get("action")
+            or "unknown"
+        )
+        if isinstance(event_type, str):
+            event_type = event_type.strip() or "unknown"
+        else:
+            event_type = "unknown"
+
         db_event = ExamEvent(
             exam_id=exam_id,
             time_seconds=event.get("time", 0.0),
             actor=event.get("actor"),
-            event_type=event.get("event_type", "unknown"),
+            event_type=event_type,
             event_data=event.get("data"),
             source=event.get("source", "fusion"),
             confidence=event.get("confidence", 1.0),

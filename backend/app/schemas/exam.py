@@ -7,6 +7,7 @@ class ExamResponse(BaseModel):
     id: int
     user_id: int
     video_url: str
+    processed_video_url: str | None = None
     status: str
     total_score: float | None
     created_at: datetime

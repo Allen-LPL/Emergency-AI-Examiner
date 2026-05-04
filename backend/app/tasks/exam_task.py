@@ -11,6 +11,7 @@ from backend.app.tasks.celery_app import celery_app
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
 def process_exam_task(self, exam_id: int, video_path: str):
+    """Celery 异步任务: 执行 AI 分析管线并将结果存入数据库。"""
     logger.info(f"Processing exam {exam_id}, video: {video_path}")
     db_gen = get_sync_db()
     db = next(db_gen)
@@ -40,6 +41,7 @@ def process_exam_task(self, exam_id: int, video_path: str):
                 },
             )
 
+        # 查询关联的传感器数据（CPR 模拟人数据）
         from backend.app.models.sensor import SensorData
 
         sensor_row = db.query(SensorData).filter(SensorData.exam_id == exam_id).first()
@@ -51,6 +53,7 @@ def process_exam_task(self, exam_id: int, video_path: str):
                 "ccf_percentage": sensor_row.ccf_percentage,
             }
 
+        # 执行 AI 分析管线（视频分析 + 音频分析 + 融合评分 + 标注视频生成）
         pipeline = ExaminationPipeline(
             config=get_ai_config(), progress_callback=_progress
         )
@@ -58,13 +61,20 @@ def process_exam_task(self, exam_id: int, video_path: str):
 
         self.update_state(state="PROGRESS", meta={"progress": 80})
 
+        # 保存事件到数据库
         events = result.get("events", [])
         save_exam_events_sync(db, exam_id, events)
 
         self.update_state(state="PROGRESS", meta={"progress": 90})
 
+        # 保存评分结果到数据库
         score_result = result.get("scores", {})
         save_exam_scores_sync(db, exam_id, score_result)
+
+        # 保存标注视频路径到数据库
+        processed_video_path = result.get("processed_video_path", "")
+        if processed_video_path:
+            exam.processed_video_url = processed_video_path
 
         exam.total_score = score_result.get("total_score", 0.0)
         exam.status = "completed"
@@ -75,6 +85,7 @@ def process_exam_task(self, exam_id: int, video_path: str):
             "status": "completed",
             "exam_id": exam_id,
             "total_score": exam.total_score,
+            "processed_video_path": processed_video_path,
         }
 
     except Exception as exc:

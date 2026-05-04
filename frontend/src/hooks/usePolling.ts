@@ -12,12 +12,12 @@ export const usePolling = (
   }, [callback])
 
   useEffect(() => {
-    if (interval === null) {
-      return
-    }
-
     if (immediate) {
       savedCallback.current()
+    }
+
+    if (interval === null) {
+      return
     }
 
     const id = setInterval(() => savedCallback.current(), interval)

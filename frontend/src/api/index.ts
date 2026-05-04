@@ -13,10 +13,10 @@ api.interceptors.request.use((config) => {
   return config
 })
 
-export const uploadExam = async (file: File): Promise<Exam> => {
+export const uploadExam = async (file: File): Promise<{ exam_id: number; task_id: string }> => {
   const formData = new FormData()
   formData.append('file', file)
-  const response = await api.post<Exam>('/exam/upload', formData, {
+  const response = await api.post<{ exam_id: number; task_id: string }>('/exam/upload', formData, {
     headers: {
       'Content-Type': 'multipart/form-data',
     },

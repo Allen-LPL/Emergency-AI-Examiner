@@ -1,8 +1,8 @@
-import os
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, status
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.deps import get_current_user
@@ -22,6 +22,7 @@ from backend.app.tasks.exam_task import process_exam_task
 
 router = APIRouter(prefix="/exam", tags=["考试"])
 
+# 允许上传的视频文件扩展名
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 
 
@@ -31,6 +32,8 @@ async def upload_exam(
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Depends(get_current_user),
 ):
+    """上传考试视频，校验格式和大小后写入磁盘，创建考试记录并触发异步 AI 分析任务。"""
+    # 校验文件扩展名
     ext = Path(file.filename or "").suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -38,12 +41,15 @@ async def upload_exam(
             detail=f"不支持的文件格式: {ext}，支持: {', '.join(ALLOWED_EXTENSIONS)}",
         )
 
+    # 确保上传目录存在
     upload_dir = Path(settings.upload_dir)
     upload_dir.mkdir(parents=True, exist_ok=True)
 
+    # 生成唯一文件名，避免冲突
     filename = f"{uuid.uuid4().hex}{ext}"
     file_path = upload_dir / filename
 
+    # 读取文件内容并校验大小
     content = await file.read()
     size_mb = len(content) / (1024 * 1024)
     if size_mb > settings.max_upload_size_mb:
@@ -52,9 +58,11 @@ async def upload_exam(
             detail=f"文件过大: {size_mb:.1f}MB，最大允许: {settings.max_upload_size_mb}MB",
         )
 
+    # 将视频文件写入磁盘
     with open(file_path, "wb") as f:
         f.write(content)
 
+    # 创建考试记录并触发 Celery 异步处理任务
     exam = await exam_service.create_exam(db, current_user.id, str(file_path))
     await db.flush()
 
@@ -72,6 +80,7 @@ async def get_exam_status(
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Depends(get_current_user),
 ):
+    """查询考试处理进度，包含当前阶段、子步骤和详细信息。"""
     exam = await exam_service.get_exam(db, exam_id)
     if not exam or exam.user_id != current_user.id:
         raise HTTPException(
@@ -85,6 +94,7 @@ async def get_exam_status(
     if exam.status == "completed":
         progress = 100
     elif exam.status == "processing" and exam.task_id:
+        # 从 Celery 任务状态中读取实时进度
         from backend.app.tasks.celery_app import celery_app
 
         result = celery_app.AsyncResult(exam.task_id)
@@ -110,6 +120,7 @@ async def get_exam_result(
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Depends(get_current_user),
 ):
+    """获取考试评分结果，包含各阶段得分明细。"""
     exam = await exam_service.get_exam(db, exam_id)
     if not exam or exam.user_id != current_user.id:
         raise HTTPException(
@@ -129,6 +140,7 @@ async def get_exam_timeline(
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Depends(get_current_user),
 ):
+    """获取考试事件时间轴，按时间排序返回所有视频/音频/融合事件。"""
     exam = await exam_service.get_exam(db, exam_id)
     if not exam or exam.user_id != current_user.id:
         raise HTTPException(
@@ -137,6 +149,40 @@ async def get_exam_timeline(
 
     events = await exam_service.get_exam_timeline(db, exam_id)
     return TimelineResponse(events=events)
+
+
+@router.get("/{exam_id}/video")
+async def get_exam_processed_video(
+    exam_id: int,
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(get_current_user),
+):
+    """下载 AI 标注后的视频文件（含姿态骨架、关键点、动作标签、语音字幕）。"""
+    exam = await exam_service.get_exam(db, exam_id)
+    if not exam or exam.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="考试记录不存在"
+        )
+    if exam.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="考试尚未完成处理"
+        )
+    if not exam.processed_video_url:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="标注视频不存在"
+        )
+
+    video_path = Path(exam.processed_video_url)
+    if not video_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="标注视频文件未找到"
+        )
+
+    return FileResponse(
+        path=str(video_path),
+        media_type="video/mp4",
+        filename=f"exam_{exam_id}_annotated.mp4",
+    )
 
 
 @router.get("/{exam_id}/debug")
@@ -153,6 +199,7 @@ async def get_exam_debug_data(
 
     events = await exam_service.get_exam_timeline(db, exam_id)
 
+    # 筛选音频类事件
     audio_events = [e for e in events if e.source == "audio"]
     transcription = []
     voice_matches = []
@@ -160,6 +207,23 @@ async def get_exam_debug_data(
 
     for e in audio_events:
         data = e.event_data or {}
+        # 提取转写片段
+        if e.event_type == "audio_transcript_segment":
+            speaker = data.get("speaker")
+            speaker_role = data.get("speaker_role") or "unknown"
+            transcription.append(
+                {
+                    "start": data.get("start", e.time_seconds),
+                    "end": data.get("end", e.time_seconds),
+                    "text": data.get("text", ""),
+                    "speaker": speaker,
+                    "speaker_role": speaker_role,
+                }
+            )
+            if speaker:
+                speaker_roles[speaker] = speaker_role
+
+        # 提取话术匹配结果
         if data.get("matched_text"):
             voice_matches.append(
                 {
@@ -190,6 +254,7 @@ async def get_exam_report(
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Depends(get_current_user),
 ):
+    """获取 HTML 格式的考试评分报告。"""
     exam = await exam_service.get_exam(db, exam_id)
     if not exam or exam.user_id != current_user.id:
         raise HTTPException(
@@ -200,6 +265,8 @@ async def get_exam_report(
             status_code=status.HTTP_400_BAD_REQUEST, detail="考试尚未完成评分"
         )
 
+    from fastapi.responses import HTMLResponse
+
     from backend.app.services.report_service import generate_html_report
 
     score_data = await exam_service.get_exam_result(db, exam_id)
@@ -208,7 +275,6 @@ async def get_exam_report(
         score_result=score_data,
         created_at=str(exam.created_at),
     )
-    from fastapi.responses import HTMLResponse
 
     return HTMLResponse(content=html)
 
@@ -220,6 +286,7 @@ async def list_exams(
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Depends(get_current_user),
 ):
+    """分页获取当前用户的考试记录列表。"""
     skip = (page - 1) * page_size
     items, total = await exam_service.list_user_exams(
         db, current_user.id, skip, page_size

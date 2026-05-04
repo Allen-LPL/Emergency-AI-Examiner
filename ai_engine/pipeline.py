@@ -42,10 +42,13 @@ class ExaminationPipeline:
         target_fps = total_frames / duration if duration > 0 else 1.0
         logger.info(f"Sampled {total_frames} frames at ~{target_fps:.2f}fps")
 
-        video_events = self._process_video(frames, total_frames)
+        video_events, frame_results, raw_action_events = self._process_video(
+            frames, total_frames
+        )
         self._cleanup_gpu()
 
         audio_events, voice_matches, transcription = self._process_audio(audio_path)
+        transcript_events = self._build_transcript_events(transcription)
         self._cleanup_gpu()
 
         self._report(70, "fusion", "merge_events", "合并视频+音频事件...")
@@ -53,7 +56,7 @@ class ExaminationPipeline:
         from ai_engine.fusion.timeline import Timeline
 
         merger = EventMerger()
-        all_events = merger.merge(video_events, audio_events)
+        all_events = merger.merge(video_events, audio_events + transcript_events)
         timeline = Timeline()
         timeline.add_events(all_events)
         self._report(
@@ -80,10 +83,16 @@ class ExaminationPipeline:
         engine = ScoringEngine()
         score_result = engine.score(timeline, context)
 
-        self._report(95, "scoring", "report_gen", "生成评分报告...")
+        self._report(93, "scoring", "report_gen", "生成评分报告...")
         from backend.app.services.report_service import generate_html_report
 
         report_html = generate_html_report(exam_id=0, score_result=score_result)
+
+        # 生成标注视频: 叠加姿态骨架、关键点、动作标签、语音字幕
+        processed_video_path = self._generate_annotated_video(
+            video_path, frame_results, raw_action_events, transcription
+        )
+        self._cleanup_gpu()
 
         self._report(
             99,
@@ -98,14 +107,78 @@ class ExaminationPipeline:
             "scores": score_result,
             "timeline": timeline.to_list(),
             "report_html": report_html,
+            "processed_video_path": processed_video_path,
         }
 
-    def _process_video(self, frames: list[dict], total_frames: int) -> list[dict]:
+    def _build_transcript_events(self, transcription: list[dict]) -> list[dict]:
+        events = []
+
+        role_text_map: dict[str, list[str]] = {}
+        for seg in transcription:
+            role = (seg.get("speaker_role") or "unknown").strip() or "unknown"
+            text = (seg.get("text") or "").strip()
+            if text:
+                role_text_map.setdefault(role, []).append(text)
+
+            events.append(
+                {
+                    "time": seg.get("start", 0.0),
+                    "event_type": "audio_transcript_segment",
+                    "source": "audio",
+                    "actor": seg.get("speaker"),
+                    "confidence": seg.get("confidence", 1.0),
+                    "data": {
+                        "start": seg.get("start", 0.0),
+                        "end": seg.get("end", 0.0),
+                        "text": text,
+                        "speaker": seg.get("speaker"),
+                        "speaker_role": role,
+                    },
+                }
+            )
+
+        if transcription:
+            full_text = " ".join(
+                (seg.get("text") or "").strip()
+                for seg in transcription
+                if (seg.get("text") or "").strip()
+            )
+            role_text = {role: " ".join(texts) for role, texts in role_text_map.items()}
+            events.append(
+                {
+                    "time": transcription[0].get("start", 0.0),
+                    "event_type": "audio_transcript_full",
+                    "source": "audio",
+                    "actor": None,
+                    "confidence": 1.0,
+                    "data": {
+                        "text": full_text,
+                        "role_text": role_text,
+                    },
+                }
+            )
+
+        return events
+
+    def _process_video(
+        self, frames: list[dict], total_frames: int
+    ) -> tuple[list[dict], list[dict], list[dict]]:
+        """
+        视频分析管线: 姿态检测 → 多人跟踪 → 动作识别
+
+        Returns:
+            (pipeline_events, frame_results, raw_action_events)
+            - pipeline_events: 供融合/评分使用的标准事件列表
+            - frame_results: 逐帧姿态检测原始结果，供视频标注使用
+            - raw_action_events: 动作识别原始事件，供视频标注使用
+        """
+        empty_result: tuple[list[dict], list[dict], list[dict]] = ([], [], [])
+
         try:
             from ai_engine.video.pose_detector import PoseDetector
         except ImportError as exc:
             logger.warning(f"PoseDetector unavailable: {exc}")
-            return []
+            return empty_result
 
         device = self.config.device
         try:
@@ -116,7 +189,7 @@ class ExaminationPipeline:
                 detector = PoseDetector(device="cpu")
             except Exception as cpu_exc:
                 logger.error(f"PoseDetector unavailable: {cpu_exc}")
-                return []
+                return empty_result
 
         def frame_progress(done, total):
             if total <= 0:
@@ -142,7 +215,7 @@ class ExaminationPipeline:
         except Exception as exc:
             logger.error(f"Pose detection failed: {exc}")
             detector.release()
-            return []
+            return empty_result
 
         self._report(35, "video_analysis", "tracking", "ByteTrack 多人跟踪...")
         try:
@@ -154,6 +227,7 @@ class ExaminationPipeline:
             40, "video_analysis", "action_recognition", "动作识别: 按压/通气/跑步..."
         )
         events = []
+        raw_action_events: list[dict] = []
         try:
             from ai_engine.video.action_recognizer import ActionRecognizer
 
@@ -173,8 +247,10 @@ class ExaminationPipeline:
                     timestamps.append(frame_result["timestamp"])
 
             if pose_sequence:
-                raw_events = recognizer.recognize_from_poses(pose_sequence, timestamps)
-                for event in raw_events:
+                raw_action_events = recognizer.recognize_from_poses(
+                    pose_sequence, timestamps
+                )
+                for event in raw_action_events:
                     events.append(
                         {
                             "time": event["time"],
@@ -190,7 +266,7 @@ class ExaminationPipeline:
             detector.release()
 
         logger.info(f"Video analysis: {len(events)} events detected")
-        return events
+        return events, frame_results, raw_action_events
 
     def _process_audio(
         self, audio_path: str
@@ -302,6 +378,58 @@ class ExaminationPipeline:
             ),
         )
         return audio_events, voice_matches, transcription
+
+    def _generate_annotated_video(
+        self,
+        video_path: str,
+        frame_results: list[dict],
+        action_events: list[dict],
+        transcription: list[dict],
+    ) -> str:
+        """生成带有姿态骨架、关键点、动作标签和语音字幕的标注视频。"""
+        if not frame_results:
+            logger.warning("无姿态检测结果，跳过标注视频生成")
+            return ""
+
+        self._report(95, "video_annotation", "rendering", "渲染标注视频...")
+
+        output_dir = Path(self.config.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        video_stem = Path(video_path).stem
+        output_path = str(output_dir / f"{video_stem}_annotated.mp4")
+
+        try:
+            from ai_engine.video.video_annotator import VideoAnnotator
+
+            annotator = VideoAnnotator(
+                keypoint_threshold=self.config.pose_keypoint_threshold,
+            )
+
+            def annotation_progress(done, total):
+                if total <= 0:
+                    return
+                pct = 95 + int(3 * done / total)
+                self._report(
+                    pct,
+                    "video_annotation",
+                    "rendering",
+                    f"渲染标注视频帧 ({done}/{total})",
+                )
+
+            result_path = annotator.generate(
+                video_path=video_path,
+                output_path=output_path,
+                frame_results=frame_results,
+                action_events=action_events,
+                transcription=transcription,
+                progress_fn=annotation_progress,
+            )
+            logger.info(f"标注视频生成完成: {result_path}")
+            return result_path
+        except Exception as exc:
+            logger.error(f"标注视频生成失败: {exc}")
+            return ""
 
     def _extract_audio(self, video_path: str) -> str:
         try:

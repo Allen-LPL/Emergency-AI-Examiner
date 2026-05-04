@@ -63,7 +63,7 @@ const Home: React.FC = () => {
       
       setTimeout(() => {
         setUploading(false)
-        navigate(`/exam/${exam.id}`)
+        navigate(`/exam/${exam.exam_id}`)
       }, 1000)
     } catch (error) {
       console.error('Upload failed:', error)

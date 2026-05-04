@@ -72,6 +72,12 @@ const Timeline: React.FC<TimelineProps> = ({ events, duration, currentTime, onEv
                   <div>时间: {event.time_seconds}s</div>
                   <div>来源: {getSourceLabel(event.source)}</div>
                   {event.actor && <div>执行者: {event.actor}</div>}
+                  {typeof event.event_data?.speaker_role === 'string' && (
+                    <div>角色: {event.event_data.speaker_role}</div>
+                  )}
+                  {typeof event.event_data?.text === 'string' && event.event_data.text && (
+                    <div className="max-w-[320px] break-words">文本: {event.event_data.text}</div>
+                  )}
                   <div>置信度: {(event.confidence * 100).toFixed(1)}%</div>
                 </div>
               }
