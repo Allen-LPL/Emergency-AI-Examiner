@@ -57,16 +57,7 @@ RUN python -c "from ultralytics import YOLO; YOLO('yolov8n-pose.pt')" && \
     cp yolov8n-pose.pt /app/models/ 2>/dev/null || true
 
 # Pre-download SenseVoiceSmall + VAD + Punctuation models
-RUN python -c "\
-    from funasr import AutoModel; \
-    AutoModel( \
-    model='iic/SenseVoiceSmall', \
-    vad_model='iic/speech_fsmn_vad_zh-cn-16k-common-pytorch', \
-    punc_model='iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch', \
-    device='cpu', \
-    hub='ms', \
-    disable_update=True, \
-    )"
+RUN python -c "from funasr import AutoModel; AutoModel(model='iic/SenseVoiceSmall', vad_model='iic/speech_fsmn_vad_zh-cn-16k-common-pytorch', punc_model='iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch', device='cpu', hub='ms', disable_update=True)"
 
 COPY . .
 
