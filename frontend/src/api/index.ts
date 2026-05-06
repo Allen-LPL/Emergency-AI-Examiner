@@ -35,8 +35,8 @@ export const getExamResult = async (id: number): Promise<ScoreResult> => {
 }
 
 export const getExamTimeline = async (id: number): Promise<ExamEvent[]> => {
-  const response = await api.get<ExamEvent[]>(`/exam/${id}/timeline`)
-  return response.data
+  const response = await api.get<{ events: ExamEvent[] }>(`/exam/${id}/timeline`)
+  return response.data.events
 }
 
 export const getExamScores = async (id: number): Promise<ScoreResult> => {
