@@ -1,22 +1,26 @@
 #!/usr/bin/env bash
 # ============================================================================
-# 一键部署脚本: 通过 git 把本地分支同步到 192.168.31.82, 并按需重启 docker 服务
+# 一键部署脚本: 通过 git 把本地分支同步到 192.168.31.82, 并按需重建 docker 服务
 #
 # 工作流:
 #   1) 校验本地工作区干净 (或 -c 自动提交)
 #   2) git push 当前分支到 origin (GitHub)
 #   3) ssh 远端: git fetch + 强制对齐 origin/<branch> (reset --hard)
-#   4) 远端按 ACTION 执行 docker compose: restart / rebuild / recreate
+#   4) 远端按 ACTION 执行 docker compose: rebuild (默认) / restart / recreate
 #   5) 可选 -l 跟踪 celery_worker 与 api 日志
 #
+# 默认动作为什么是 rebuild?
+#   backend/Dockerfile 与 ai_engine/Dockerfile 都用 COPY . . 把代码烤进镜像,
+#   docker compose restart 不会重新读取代码, 必须 up -d --build 才会让新代码生效.
+#
 # 使用方式:
-#   ./scripts/deploy.sh                     # 默认 = restart
-#   ./scripts/deploy.sh restart             # 适用于 Python 代码改动
-#   ./scripts/deploy.sh rebuild             # 适用于改了 Dockerfile / 依赖
+#   ./scripts/deploy.sh                     # 默认 = rebuild (改 Python 代码就用它)
+#   ./scripts/deploy.sh rebuild             # 适用于改了 Python 代码 / Dockerfile / 依赖
+#   ./scripts/deploy.sh restart             # 仅重启容器, 不重新 build (代码改动不会生效)
 #   ./scripts/deploy.sh recreate            # 适用于改了 docker-compose.yml 卷绑定
-#   ./scripts/deploy.sh restart -l          # 部署完成后 tail 日志
+#   ./scripts/deploy.sh rebuild -l          # 部署完成后 tail 日志
 #   ./scripts/deploy.sh -c "fix: xxx"       # 自动提交未保存改动后再部署
-#   ./scripts/deploy.sh --no-push           # 跳过 git push (远端会从 origin 拉到最新已推送提交)
+#   ./scripts/deploy.sh --no-push           # 跳过 git push (远端从 origin 拉已推送提交)
 #
 # 环境变量:
 #   DEPLOY_USER   远端 SSH 用户, 默认 root
@@ -32,7 +36,7 @@ REMOTE_USER="${DEPLOY_USER:-root}"
 REMOTE_DIR="${DEPLOY_DIR:-/data/sdb/Emergency-AI-Examiner}"
 LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-ACTION="restart"
+ACTION="rebuild"   # 默认 rebuild, 因为 Dockerfile 用 COPY . . 把代码烤进镜像
 TAIL_LOGS=0
 AUTO_COMMIT_MSG=""
 DO_PUSH=1

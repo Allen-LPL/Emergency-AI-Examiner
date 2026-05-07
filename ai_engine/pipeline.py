@@ -320,8 +320,14 @@ class ExaminationPipeline:
                 device=device,
                 max_speakers=self.config.max_speakers,
             )
-            if diarizer.pipeline is not None and transcription:
-                diarization = diarizer.diarize(audio_path)
+            # 关键: 即使 pyannote pipeline 不可用 (无 token / 网络不可达 / 加载失败),
+            # 也要调用 assign_speakers 触发兜底逻辑, 给所有段统一一个默认 speaker.
+            # 否则 transcription 全部 speaker=None, 下游角色推断 100% 失败,
+            # 大量话术规则会因"未听到 X 口令"而被扣分.
+            if transcription:
+                diarization = (
+                    diarizer.diarize(audio_path) if diarizer.pipeline is not None else []
+                )
                 transcription = diarizer.assign_speakers(transcription, diarization)
             del diarizer
         except Exception as exc:

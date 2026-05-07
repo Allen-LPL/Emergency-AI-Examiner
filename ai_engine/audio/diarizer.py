@@ -71,13 +71,24 @@ class SpeakerDiarizer:
     def assign_speakers(
         self, transcription: list[dict], diarization: list[dict]
     ) -> list[dict]:
+        """把分离出来的 speaker 赋给每个转写段。
+
+        当 diarization 为空 (pyannote 未配置 / 网络不可达 / 模型加载失败) 时,
+        统一给所有段一个默认 speaker 'SPEAKER_DEFAULT', 让下游 SpeakerRoleInferrer
+        至少能基于内容关键词推出一个角色 (默认会被分类为 'doctor', 因为是唯一说话人),
+        从而保证不依赖角色的话术规则能正常匹配, 而不是因为 speaker=None 而全军覆没.
+        """
         if not diarization:
+            logger.warning(
+                "说话人分离不可用, 给所有转写段分配默认 speaker=SPEAKER_DEFAULT"
+            )
+            for segment in transcription:
+                segment["speaker"] = "SPEAKER_DEFAULT"
             return transcription
 
         for segment in transcription:
             seg_start = segment.get("start", 0)
             seg_end = segment.get("end", 0)
-            seg_mid = (seg_start + seg_end) / 2
 
             best_speaker = None
             best_overlap = 0
@@ -91,6 +102,7 @@ class SpeakerDiarizer:
                     best_overlap = overlap
                     best_speaker = d_seg["speaker"]
 
-            segment["speaker"] = best_speaker
+            # 兜底: 若没有任何重叠 (转写段在所有分离段之外), 仍给一个默认值
+            segment["speaker"] = best_speaker or "SPEAKER_DEFAULT"
 
         return transcription
