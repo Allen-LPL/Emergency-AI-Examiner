@@ -18,8 +18,12 @@ services:
       - REDIS_HOST=redis
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    # 宿主机绑定挂载: 让 api / celery_worker / 宿主机三方共享同一份文件视图
+    # uploads/  原始上传视频
+    # outputs/  AI 流水线生成的标注视频(姿态骨架/关键点/动作标签/语音字幕)
     volumes:
-      - uploads_data:/app/uploads
+      - ./uploads:/app/uploads
+      - ./outputs:/app/outputs
     networks:
       - examiner
 
@@ -45,8 +49,11 @@ services:
       - REDIS_HOST=redis
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    # celery_worker 同样绑定到宿主机 uploads / outputs, 与 api 容器共享读写
+    # model_cache 仍使用命名卷, 用于缓存 HuggingFace / Ultralytics 等模型权重
     volumes:
-      - uploads_data:/app/uploads
+      - ./uploads:/app/uploads
+      - ./outputs:/app/outputs
       - model_cache:/root/.cache
     networks:
       - examiner
@@ -118,7 +125,7 @@ services:
 volumes:
   db_data:
   redis_data:
-  uploads_data:
+  # 注意: uploads / outputs 已改为宿主机绑定挂载, 不再使用命名卷
   model_cache:
 
 networks:

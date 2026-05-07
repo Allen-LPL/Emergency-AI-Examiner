@@ -52,11 +52,17 @@ class AIEngineConfig(BaseSettings):
         default=4, description="Maximum number of speakers to detect"
     )
 
-    # Paths
-    upload_dir: str = Field(default="./uploads", description="Upload directory")
-    output_dir: str = Field(default="./outputs", description="Output directory")
+    # 路径相关:
+    #   upload_dir / output_dir 默认相对路径, 由调用方在使用前通过 Path(...).resolve()
+    #   转为绝对路径, 以适配 docker 多容器场景 (api 与 celery_worker 是两个容器,
+    #   工作目录可能不同, 但通过宿主机绑定挂载共享 ./uploads 与 ./outputs).
+    upload_dir: str = Field(default="./uploads", description="原始视频上传目录")
+    output_dir: str = Field(
+        default="./outputs",
+        description="AI 标注视频输出目录 (含姿态骨架、关键点、动作标签、语音字幕)",
+    )
     model_dir: str = Field(
-        default="./ai_engine/models", description="Model weights directory"
+        default="./ai_engine/models", description="模型权重目录"
     )
 
     model_config = {

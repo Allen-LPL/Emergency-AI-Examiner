@@ -386,18 +386,34 @@ class ExaminationPipeline:
         action_events: list[dict],
         transcription: list[dict],
     ) -> str:
-        """生成带有姿态骨架、关键点、动作标签和语音字幕的标注视频。"""
+        """生成带有姿态骨架、关键点、动作标签和语音字幕的标注视频。
+
+        前置条件: frame_results 非空 (至少有一帧检测到了人体), 否则没有可叠加的内容,
+        直接跳过. 所有失败分支都会用 logger.exception 输出完整堆栈, 方便排查.
+        """
+        # 函数入口先打印一条 INFO, 即便后续被前置条件短路, 也能在日志中确认本步骤被调用
+        logger.info(
+            f"【标注视频】开始生成: video={video_path}, "
+            f"检测帧={len(frame_results)}, 动作事件={len(action_events)}, "
+            f"转写段={len(transcription)}"
+        )
+
         if not frame_results:
-            logger.warning("无姿态检测结果，跳过标注视频生成")
+            logger.warning(
+                "【标注视频】frame_results 为空, 跳过标注视频生成 "
+                "(通常是姿态检测全部失败或视频中无人体)"
+            )
             return ""
 
         self._report(95, "video_annotation", "rendering", "渲染标注视频...")
 
-        output_dir = Path(self.config.output_dir)
+        # 使用绝对路径写出, 避免 worker 容器与 api 容器工作目录差异导致 api 找不到文件
+        output_dir = Path(self.config.output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
         video_stem = Path(video_path).stem
         output_path = str(output_dir / f"{video_stem}_annotated.mp4")
+        logger.info(f"【标注视频】目标输出路径: {output_path}")
 
         try:
             from ai_engine.video.video_annotator import VideoAnnotator
@@ -425,10 +441,19 @@ class ExaminationPipeline:
                 transcription=transcription,
                 progress_fn=annotation_progress,
             )
-            logger.info(f"标注视频生成完成: {result_path}")
+
+            # 写盘成功后打印文件大小, 一眼即可判断是否真实落盘
+            try:
+                size_mb = Path(result_path).stat().st_size / (1024 * 1024)
+                logger.info(
+                    f"【标注视频】生成完成: {result_path} ({size_mb:.2f} MB)"
+                )
+            except OSError:
+                logger.info(f"【标注视频】生成完成: {result_path} (无法读取大小)")
             return result_path
         except Exception as exc:
-            logger.error(f"标注视频生成失败: {exc}")
+            # 关键: 用 logger.exception 暴露完整 Python 堆栈
+            logger.exception(f"【标注视频】生成失败: {exc}")
             return ""
 
     def _extract_audio(self, video_path: str) -> str:

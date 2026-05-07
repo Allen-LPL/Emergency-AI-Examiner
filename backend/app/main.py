@@ -13,7 +13,9 @@ from backend.app.models import Exam, ExamEvent, ExamScore, User  # noqa: F401
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 启动时确保上传目录与标注视频输出目录均存在 (绑定挂载场景下也保证容器侧路径可写)
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
+    Path(settings.output_dir).mkdir(parents=True, exist_ok=True)
 
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -39,9 +41,15 @@ app.add_middleware(
 
 app.include_router(api_v1_router)
 
+# 静态资源挂载: /uploads 暴露原始视频, /outputs 暴露 AI 标注后的视频
+# 标注视频由 celery_worker 容器写入 ./outputs (绑定挂载), api 容器即时可读
 upload_path = Path(settings.upload_dir)
-if upload_path.exists():
-    app.mount("/uploads", StaticFiles(directory=str(upload_path)), name="uploads")
+upload_path.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(upload_path)), name="uploads")
+
+output_path = Path(settings.output_dir)
+output_path.mkdir(parents=True, exist_ok=True)
+app.mount("/outputs", StaticFiles(directory=str(output_path)), name="outputs")
 
 
 @app.get("/health")

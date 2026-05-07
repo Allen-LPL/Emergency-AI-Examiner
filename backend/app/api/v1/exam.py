@@ -3,6 +3,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, status
 from fastapi.responses import FileResponse
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.deps import get_current_user
@@ -41,13 +42,15 @@ async def upload_exam(
             detail=f"不支持的文件格式: {ext}，支持: {', '.join(ALLOWED_EXTENSIONS)}",
         )
 
-    # 确保上传目录存在
-    upload_dir = Path(settings.upload_dir)
+    # 确保上传目录存在, 并解析为绝对路径
+    # 之所以使用绝对路径: api 容器与 celery_worker 容器是两个独立进程,
+    # 它们共享 ./uploads 绑定挂载, 但工作目录可能不同, 相对路径会出现解析歧义.
+    upload_dir = Path(settings.upload_dir).resolve()
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    # 生成唯一文件名，避免冲突
+    # 生成唯一文件名, 避免冲突
     filename = f"{uuid.uuid4().hex}{ext}"
-    file_path = upload_dir / filename
+    file_path = (upload_dir / filename).resolve()
 
     # 读取文件内容并校验大小
     content = await file.read()
@@ -58,11 +61,17 @@ async def upload_exam(
             detail=f"文件过大: {size_mb:.1f}MB，最大允许: {settings.max_upload_size_mb}MB",
         )
 
-    # 将视频文件写入磁盘
+    # 将视频文件写入磁盘 (此处必须真正落盘, 失败会抛 IOError 由 FastAPI 转 500)
     with open(file_path, "wb") as f:
         f.write(content)
 
-    # 创建考试记录并触发 Celery 异步处理任务
+    # 写盘成功后立即记录绝对路径与文件大小, 便于排查"宿主机看不到 uploads 文件"类问题
+    logger.info(
+        f"[上传] 视频已写入磁盘: path={file_path}, size={size_mb:.2f}MB, "
+        f"original_name={file.filename}"
+    )
+
+    # 创建考试记录并触发 Celery 异步处理任务. video_url 入库使用绝对路径字符串.
     exam = await exam_service.create_exam(db, current_user.id, str(file_path))
     await db.flush()
 
@@ -70,6 +79,11 @@ async def upload_exam(
     exam.task_id = task.id
     exam.status = "pending"
     await db.flush()
+
+    logger.info(
+        f"[上传] 已派发 Celery 任务: exam_id={exam.id}, task_id={task.id}, "
+        f"video_path={file_path}"
+    )
 
     return ExamUploadResponse(exam_id=exam.id, task_id=task.id)
 
@@ -168,14 +182,28 @@ async def get_exam_processed_video(
             status_code=status.HTTP_400_BAD_REQUEST, detail="考试尚未完成处理"
         )
     if not exam.processed_video_url:
+        # 流水线尚未生成或生成失败 (可在 celery_worker 日志中搜索 "标注视频" 关键字定位)
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="标注视频不存在"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="标注视频尚未生成, 请检查 AI 流水线日志",
         )
 
-    video_path = Path(exam.processed_video_url)
+    # 数据库中存的可能是绝对路径, 也可能是历史的相对路径; 这里做兼容解析
+    raw_path = Path(exam.processed_video_url)
+    if raw_path.is_absolute():
+        video_path = raw_path
+    else:
+        # 相对路径按 settings.output_dir 为基准解析, 兼容 "outputs/xxx.mp4" 这类老数据
+        video_path = (Path(settings.output_dir) / raw_path).resolve()
+
     if not video_path.exists():
+        logger.warning(
+            f"[下载] 标注视频文件不存在: db={exam.processed_video_url}, "
+            f"resolved={video_path}"
+        )
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="标注视频文件未找到"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"标注视频文件未找到: {video_path.name}",
         )
 
     return FileResponse(
