@@ -34,10 +34,10 @@ services:
       # build 阶段代理 (pip / 模型预下载需要联网)
       # 网关 IP 已在 networks.examiner 固定为 172.28.0.1, 重启不漂移
       args:
-        - HTTP_PROXY=http://172.28.0.1:10809
-        - HTTPS_PROXY=http://172.28.0.1:10809
-        - http_proxy=http://172.28.0.1:10809
-        - https_proxy=http://172.28.0.1:10809
+        - HTTP_PROXY=http://172.17.0.1:10809
+        - HTTPS_PROXY=http://172.17.0.1:10809
+        - http_proxy=http://172.17.0.1:10809
+        - https_proxy=http://172.17.0.1:10809
     container_name: examiner_worker
     command: celery -A backend.app.tasks.celery_app worker --loglevel=info --concurrency=1
     depends_on:
@@ -53,10 +53,10 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
       # 运行时代理: pyannote 加载 HF 模型 / FunASR 加载 ModelScope 都走 v2ray
       # NO_PROXY 必须涵盖 docker 内部服务名与本地回环, 否则 redis/db/api 走代理会失败
-      - HTTP_PROXY=http://172.28.0.1:10809
-      - HTTPS_PROXY=http://172.28.0.1:10809
-      - http_proxy=http://172.28.0.1:10809
-      - https_proxy=http://172.28.0.1:10809
+      - HTTP_PROXY=http://172.17.0.1:10809
+      - HTTPS_PROXY=http://172.17.0.1:10809
+      - http_proxy=http://172.17.0.1:10809
+      - https_proxy=http://172.17.0.1:10809
       - NO_PROXY=localhost,127.0.0.1,db,redis,api,frontend,examiner_db,examiner_redis,examiner_api,examiner_frontend,modelscope.cn,modelscope.com
       - no_proxy=localhost,127.0.0.1,db,redis,api,frontend,examiner_db,examiner_redis,examiner_api,examiner_frontend,modelscope.cn,modelscope.com
     # celery_worker 同样绑定到宿主机 uploads / outputs, 与 api 容器共享读写
@@ -142,7 +142,7 @@ networks:
   examiner:
     driver: bridge
     # 固定子网与网关, 避免 docker / 宿主机重启时 bridge IP 漂移导致 v2ray 代理失效.
-    # 宿主机 v2ray 监听 0.0.0.0:10809 时, 网关 172.28.0.1:10809 即可作为容器代理.
+    # 宿主机 v2ray 监听 0.0.0.0:10809 时, 网关 172.17.0.1:10809 即可作为容器代理.
     ipam:
       driver: default
       config:
