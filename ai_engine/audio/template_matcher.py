@@ -1,119 +1,149 @@
-"""
-话术模板匹配引擎
-将每条评分规则与完整的标准话术模板进行匹配，
-计算匹配度(0-100%)，支持按说话人角色过滤。
-替代原有的简单关键词匹配 (keyword_matcher.py)。
+# pyright: reportMissingImports=false
+"""话术模板匹配 (重写版).
+
+变化点:
+    - 输入从旧的 dict 列表改为 SpeechSegment 列表 (强类型)
+    - 输出 AudioEvent (统一接口)
+    - 相似度算法保持: SequenceMatcher * 0.4 + bigram 覆盖 * 0.6
+    - 保留所有现有 rule_code, scoring engine 不需改动
+    - 新增急救话术规则 (defib_prepare / defib_done / airway_open /
+      ventilation / transport_prepare / history_inquiry)
 """
 
+from __future__ import annotations
+
 import difflib
+from typing import Any, Optional
 
 from loguru import logger
 
-VOICE_TEMPLATES = {
+from ai_engine.audio.types import AudioEvent, SpeechSegment
+
+
+VOICE_TEMPLATES: dict[str, dict[str, Any]] = {
+    # ---------- phase1 院前准备 ----------
     "environment_safety": {
-        "templates": ["现场环境安全", "环境安全，可以施救", "确认现场安全"],
+        "templates": ["现场环境安全", "环境安全可以施救", "确认现场安全"],
         "expected_role": "doctor",
         "phase": "phase1_before_arrival",
         "rule_code": "environment_safety",
         "rule_name": "评估现场环境安全",
-        "max_score": 1,
     },
+    # ---------- phase2 到场告知 ----------
     "inform_family": {
         "templates": [
-            "患者意识丧失，呼吸心跳停止，需要立即抢救",
-            "病人没有反应，没有呼吸，需要紧急心肺复苏",
-            "患者心跳骤停，我们需要立即进行抢救",
+            "患者意识丧失呼吸心跳停止需要立即抢救",
+            "病人没有反应没有呼吸需要紧急心肺复苏",
+            "患者心跳骤停我们需要立即进行抢救",
         ],
         "expected_role": "doctor",
         "phase": "phase2_arrival_step1",
         "rule_code": "inform_family",
         "rule_name": "口头告知病情",
-        "max_score": 1,
     },
     "start_compression": {
-        "templates": ["开始胸外按压", "开始心肺复苏", "开始按压"],
+        "templates": [
+            "开始胸外按压", "立即胸外按压",
+            "开始心肺复苏", "继续按压", "开始按压",
+        ],
         "expected_role": "doctor",
         "phase": "phase2_arrival_step1",
         "rule_code": "compression_start_fast",
         "rule_name": "及时开始胸外按压",
-        "max_score": 3,
     },
+    # ---------- phase3 评估 / 心电监护 ----------
     "ecg_sign": {
         "templates": [
             "请家属在心电图上签字",
-            "这是心电图结果，请您签字确认",
-            "心电图打印好了，请签字",
+            "这是心电图结果请您签字确认",
+            "心电图打印好了请签字",
         ],
         "expected_role": "doctor",
         "phase": "phase3_arrival_step2",
         "rule_code": "ecg_sign",
         "rule_name": "心电图纸告知家属签字",
-        "max_score": 1,
     },
+    "airway_open": {
+        "templates": [
+            "开放气道", "保持气道通畅", "清理口腔异物",
+        ],
+        "expected_role": "doctor",
+        "phase": "phase3_arrival_step2",
+        "rule_code": "airway_open",
+        "rule_name": "开放气道",
+    },
+    "ventilation": {
+        "templates": [
+            "球囊通气", "观察胸廓起伏", "简易呼吸器通气",
+        ],
+        "expected_role": None,
+        "phase": "phase3_arrival_step2",
+        "rule_code": "ventilation",
+        "rule_name": "球囊通气",
+    },
+    # ---------- phase4 除颤 / 用药 ----------
     "evaluate_rhythm": {
         "templates": [
-            "所有人离开，评估心律",
-            "大家让开，我要评估心律",
-            "停止按压，评估心律",
-            "让开，不要接触患者",
+            "所有人离开评估心律", "大家让开我要评估心律",
+            "停止按压评估心律", "让开不要接触患者",
         ],
         "expected_role": "doctor",
         "phase": "phase4_arrival_step3",
         "rule_code": "evaluate_rhythm",
         "rule_name": "规范评估心律",
-        "max_score": 2,
     },
     "iv_access": {
         "templates": [
-            "开通静脉通路",
-            "建立静脉通路",
-            "静脉通路已开通",
-            "请开通静脉通路",
+            "开通静脉通路", "建立静脉通路",
+            "静脉通路已开通", "请开通静脉通路",
         ],
         "expected_role": None,
         "phase": "phase4_arrival_step3",
         "rule_code": "iv_access",
         "rule_name": "开通静脉通路",
-        "max_score": 2,
     },
     "epinephrine_admin": {
         "templates": [
-            "肾上腺素1毫克静脉推注",
-            "给予肾上腺素1mg",
-            "推注肾上腺素1毫克",
+            "肾上腺素一毫克静脉推注",
+            "给予肾上腺素一毫克",
+            "推注肾上腺素一毫克",
             "肾上腺素一毫克",
         ],
         "expected_role": "doctor",
         "phase": "phase4_arrival_step3",
         "rule_code": "epinephrine_admin",
         "rule_name": "肾上腺素1mg推注",
-        "max_score": 2,
     },
-    "energy_announce": {
+    "defib_prepare": {
         "templates": [
-            "除颤能量200焦",
-            "双相波200焦耳",
-            "设置200焦",
-            "能量200焦准备除颤",
+            "准备除颤", "准备充电", "充电",
+            "除颤能量二百焦耳", "双相波二百焦",
         ],
         "expected_role": "doctor",
         "phase": "phase4_arrival_step3",
         "rule_code": "energy_correct",
         "rule_name": "除颤能量正确",
-        "max_score": 2,
     },
     "clear_before_defib": {
         "templates": [
-            "所有人离开，准备除颤",
-            "大家不要接触患者，准备放电",
-            "让开，准备除颤",
-            "所有人离开患者",
+            "所有人离开准备除颤",
+            "大家不要接触患者准备放电",
+            "让开准备除颤",
+            "所有人离开患者", "清场准备放电",
         ],
         "expected_role": "doctor",
         "phase": "phase4_arrival_step3",
         "rule_code": "clear_before_defib",
         "rule_name": "除颤前旁人离开",
-        "max_score": 2,
+    },
+    "defib_done": {
+        "templates": [
+            "放电", "除颤完成", "电击完成", "电击结束",
+        ],
+        "expected_role": "doctor",
+        "phase": "phase4_arrival_step3",
+        "rule_code": "defib_skilled",
+        "rule_name": "除颤操作熟练",
     },
     "informed_consent": {
         "templates": [
@@ -125,39 +155,52 @@ VOICE_TEMPLATES = {
         "phase": "phase4_arrival_step3",
         "rule_code": "informed_consent",
         "rule_name": "知情告知签字",
-        "max_score": 1,
     },
+    # ---------- phase5 持续 CPR ----------
     "re_evaluate": {
-        "templates": ["再次评估心律", "停止按压，再次评估", "所有人离开，再次评估"],
+        "templates": [
+            "再次评估心律", "停止按压再次评估",
+            "所有人离开再次评估",
+        ],
         "expected_role": "doctor",
         "phase": "phase5_arrival_step4",
         "rule_code": "re_evaluate",
         "rule_name": "再次规范评估",
-        "max_score": 1,
     },
     "compression_handover": {
-        "templates": ["更换按压人员", "替换按压", "换人按压", "你来接替按压"],
+        "templates": [
+            "更换按压人员", "替换按压",
+            "换人按压", "你来接替按压",
+        ],
         "expected_role": "doctor",
         "phase": "phase5_arrival_step4",
         "rule_code": "compression_handover",
         "rule_name": "按压人员更换",
-        "max_score": 2,
+    },
+    # ---------- phase6 转运 ----------
+    "transport_prepare": {
+        "templates": [
+            "准备转运", "铲式担架", "固定患者准备转运",
+        ],
+        "expected_role": None,
+        "phase": "phase6_arrival_step5",
+        "rule_code": "scoop_stretcher",
+        "rule_name": "铲式担架转运",
     },
     "transfer_consent": {
         "templates": [
-            "需要转运到医院，请签字同意",
-            "转运知情同意，请签字",
+            "需要转运到医院请签字同意",
+            "转运知情同意请签字",
             "现在需要转运到医院进一步治疗",
         ],
         "expected_role": "doctor",
         "phase": "phase6_arrival_step5",
         "rule_code": "transfer_consent",
         "rule_name": "转运知情告知",
-        "max_score": 1,
     },
     "transfer_monitoring": {
         "templates": [
-            "转运途中持续监测血压、氧饱和度",
+            "转运途中持续监测血压氧饱和度",
             "监测生命体征",
             "持续监护血压心律氧饱和度",
         ],
@@ -165,7 +208,6 @@ VOICE_TEMPLATES = {
         "phase": "phase6_arrival_step5",
         "rule_code": "transfer_monitoring",
         "rule_name": "转运途中持续监护",
-        "max_score": 1,
     },
     "humanistic_care": {
         "templates": [
@@ -177,105 +219,95 @@ VOICE_TEMPLATES = {
         "phase": "phase6_arrival_step5",
         "rule_code": "humanistic_care",
         "rule_name": "人文关怀",
-        "max_score": 1,
+    },
+    # ---------- 病史询问 (新增) ----------
+    "history_inquiry": {
+        "templates": [
+            "询问病史",
+            "有什么过敏史",
+            "平时用什么药",
+            "发病时间是什么时候",
+            "之前有什么病",
+        ],
+        "expected_role": "driver",  # 由家属沟通方 (默认 driver) 询问
+        "phase": "phase2_arrival_step1",
+        "rule_code": "history_inquiry",
+        "rule_name": "询问病史",
     },
 }
 
 
 class TemplateMatcher:
-    """话术模板匹配引擎"""
+    """话术模板匹配引擎 (输入 SpeechSegment, 输出 AudioEvent)."""
 
-    def __init__(self, templates: dict | None = None, min_similarity: float = 0.35):
-        """
-        初始化模板匹配器
-
-        Args:
-            templates: 话术模板定义字典，默认使用 VOICE_TEMPLATES
-            min_similarity: 最低匹配度阈值，低于该值不记为命中
-        """
+    def __init__(
+        self,
+        templates: Optional[dict[str, dict[str, Any]]] = None,
+        min_similarity: float = 0.35,
+    ) -> None:
         self.templates = templates or VOICE_TEMPLATES
         self.min_similarity = min_similarity
 
-    def match_transcript(self, transcription: list[dict]) -> list[dict]:
-        """
-        对转写结果进行话术模板匹配
-
-        Args:
-            transcription: 带有 text、start、end、speaker、speaker_role 字段的转写段列表
-
-        Returns:
-            匹配结果列表，每个元素包含匹配时间、规则信息、相似度、说话人及角色信息
-        """
-        matched_events = []
-
+    def match(self, segments: list[SpeechSegment]) -> list[AudioEvent]:
+        events: list[AudioEvent] = []
         for rule_key, rule in self.templates.items():
-            best_match = self._find_best_match(transcription, rule_key, rule)
-            if best_match:
-                matched_events.append(best_match)
-
+            best = self._find_best_match(segments, rule_key, rule)
+            if best is not None:
+                events.append(best)
         logger.info(
-            f"话术模板匹配: {len(matched_events)}/{len(self.templates)} 条规则匹配成功"
+            f"[TemplateMatcher] 命中 {len(events)}/{len(self.templates)} 条规则"
         )
-        return matched_events
+        return events
 
     def _find_best_match(
-        self, transcription: list[dict], rule_key: str, rule: dict
-    ) -> dict | None:
-        """在所有转写段中找到与当前规则最佳匹配的一条记录"""
-        best_result = None
-        best_similarity = 0.0
+        self,
+        segments: list[SpeechSegment],
+        rule_key: str,
+        rule: dict[str, Any],
+    ) -> Optional[AudioEvent]:
+        best_event: Optional[AudioEvent] = None
+        best_sim = 0.0
 
         expected_role = rule.get("expected_role")
 
-        for seg in transcription:
-            text = seg.get("text", "").strip()
+        for seg in segments:
+            text = (seg.text or "").strip()
             if not text:
                 continue
-
             for template in rule["templates"]:
                 similarity = self._compute_similarity(text, template)
-
-                if similarity > best_similarity and similarity >= self.min_similarity:
-                    best_similarity = similarity
-                    speaker_role = seg.get("speaker_role", "unknown")
+                if similarity > best_sim and similarity >= self.min_similarity:
+                    best_sim = similarity
                     role_correct = (
-                        expected_role is None or speaker_role == expected_role
+                        expected_role is None or seg.role == expected_role
                     )
-                    best_result = {
-                        "time": seg.get("start", 0.0),
-                        "end": seg.get("end", 0.0),
-                        "rule_key": rule_key,
-                        "rule_code": rule["rule_code"],
-                        "rule_name": rule["rule_name"],
-                        "phase": rule["phase"],
-                        "score": rule["max_score"],
-                        "similarity": round(best_similarity, 3),
-                        "matched_text": text,
-                        "matched_template": template,
-                        "speaker": seg.get("speaker"),
-                        "speaker_role": speaker_role,
-                        "role_correct": role_correct,
-                        "matched_keywords": [],
-                    }
+                    best_event = AudioEvent(
+                        start=seg.start,
+                        end=seg.end,
+                        speaker=seg.speaker,
+                        role=seg.role,
+                        event_type=rule["rule_code"],
+                        text=text,
+                        rule_code=rule["rule_code"],
+                        rule_name=rule.get("rule_name"),
+                        phase=rule.get("phase"),
+                        similarity=round(best_sim, 3),
+                        matched_template=template,
+                        role_correct=role_correct,
+                        extras={"rule_key": rule_key},
+                    )
+        return best_event
 
-        return best_result
-
-    def _compute_similarity(self, text: str, template: str) -> float:
-        """
-        计算文本与模板的综合匹配度
-
-        组合两类信号:
-        1. 序列相似度
-        2. 模板双字片段覆盖率
-        """
+    @staticmethod
+    def _compute_similarity(text: str, template: str) -> float:
         seq_sim = difflib.SequenceMatcher(None, text, template).ratio()
-
-        template_chars = [template[i : i + 2] for i in range(0, len(template) - 1)]
-        if template_chars:
-            hits = sum(1 for token in template_chars if token in text)
-            keyword_coverage = hits / len(template_chars)
+        if len(template) >= 2:
+            bigrams = [template[i : i + 2] for i in range(len(template) - 1)]
+            hits = sum(1 for bg in bigrams if bg in text)
+            coverage = hits / len(bigrams)
         else:
-            keyword_coverage = 0.0
+            coverage = 1.0 if template in text else 0.0
+        return seq_sim * 0.4 + coverage * 0.6
 
-        combined = seq_sim * 0.4 + keyword_coverage * 0.6
-        return combined
+
+__all__ = ["TemplateMatcher", "VOICE_TEMPLATES"]

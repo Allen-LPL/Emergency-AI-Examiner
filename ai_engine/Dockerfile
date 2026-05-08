@@ -56,8 +56,23 @@ RUN python -c "from ultralytics import YOLO; YOLO('yolov8n-pose.pt')" && \
     mkdir -p /app/models && \
     cp yolov8n-pose.pt /app/models/ 2>/dev/null || true
 
-# Pre-download SenseVoiceSmall + VAD + Punctuation models
-RUN python -c "from funasr import AutoModel; AutoModel(model='iic/SenseVoiceSmall', vad_model='iic/speech_fsmn_vad_zh-cn-16k-common-pytorch', punc_model='iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch', device='cpu', hub='ms', disable_update=True)"
+# 预下载 ASR 模型 (Paraformer-large 主 ASR + 标点) - 来自 ModelScope
+# 不再预下载 SenseVoiceSmall, 项目已切到 Paraformer-large
+RUN python -c "from funasr import AutoModel; AutoModel(\
+    model='iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch', \
+    punc_model='iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch', \
+    device='cpu', hub='ms', disable_update=True)"
+
+# 预下载 pyannote 说话人分离模型 (3.1)
+# 需要 HF_TOKEN, 通过 build arg 传入. 失败不阻断 build (运行时再试一次).
+ARG HF_TOKEN=""
+RUN if [ -n "$HF_TOKEN" ]; then \
+    python -c "import os; from pyannote.audio import Pipeline; \
+Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', token=os.environ.get('HF_TOKEN'))" \
+    || echo "[warn] pyannote 预下载失败, 运行时会重试"; \
+    else \
+    echo "[warn] 未提供 HF_TOKEN build arg, 跳过 pyannote 预下载"; \
+    fi
 
 COPY . .
 

@@ -8,6 +8,10 @@ from backend.app.services.exam_service import (
     save_exam_events_sync,
     save_exam_scores_sync,
 )
+from backend.app.services.transcript_service import (
+    dump_audio_timeline_json,
+    save_audio_timeline_sync,
+)
 from backend.app.tasks.celery_app import celery_app
 
 
@@ -103,6 +107,26 @@ def process_exam_task(self, exam_id: int, video_path: str):
         events = result.get("events", [])
         save_exam_events_sync(db, exam_id, events)
         logger.info(f"[考试 {exam_id}] 已写入事件 {len(events)} 条")
+
+        self.update_state(state="PROGRESS", meta={"progress": 87})
+
+        # 保存音频时间轴 (transcripts + speaker_role_maps + outputs JSON)
+        audio_result = result.get("audio_result") or {}
+        if audio_result:
+            try:
+                save_audio_timeline_sync(db, exam_id, audio_result)
+                # 同步落 JSON, 路径用 settings.output_dir 保证 api 容器也能读
+                from backend.app.config import settings as _settings
+
+                dump_audio_timeline_json(
+                    output_dir=_settings.output_dir,
+                    exam_id=exam_id,
+                    audio_result=audio_result,
+                )
+            except Exception as exc:
+                logger.exception(
+                    f"[考试 {exam_id}] 音频时间轴持久化失败: {exc} (流程继续)"
+                )
 
         self.update_state(state="PROGRESS", meta={"progress": 90})
 

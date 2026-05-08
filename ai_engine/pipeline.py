@@ -47,7 +47,9 @@ class ExaminationPipeline:
         )
         self._cleanup_gpu()
 
-        audio_events, voice_matches, transcription = self._process_audio(audio_path)
+        audio_events, voice_matches, transcription, audio_result = self._process_audio(
+            audio_path
+        )
         transcript_events = self._build_transcript_events(transcription)
         self._cleanup_gpu()
 
@@ -108,6 +110,8 @@ class ExaminationPipeline:
             "timeline": timeline.to_list(),
             "report_html": report_html,
             "processed_video_path": processed_video_path,
+            # 完整音频管线输出, 供 backend 持久化 transcripts / speaker_role_map / JSON
+            "audio_result": audio_result,
         }
 
     def _build_transcript_events(self, transcription: list[dict]) -> list[dict]:
@@ -270,120 +274,115 @@ class ExaminationPipeline:
 
     def _process_audio(
         self, audio_path: str
-    ) -> tuple[list[dict], list[dict], list[dict]]:
-        """
-        音频处理管线: VAD → ASR → Diarization → 角色推断 → 话术模板匹配
+    ) -> tuple[list[dict], list[dict], list[dict], dict]:
+        """音频处理管线 (新版): AudioPipeline 统一编排.
+
+        AudioPipeline 内部顺序为:
+            预处理 → diarization (pyannote 3.1) → 段合并 → ASR (Paraformer-large)
+            → 文本清洗 → 领域纠错 → 段类型分类 → 角色绑定 → 话术模板匹配
 
         Returns:
-            (audio_events, voice_matches, transcription)
+            (audio_events, voice_matches, transcription, audio_result)
+            - audio_events: 供 EventMerger 融合用 (event_type=rule_code, source=audio)
+            - voice_matches: scoring engine 上下文用 (兼容旧字段名 time/score/similarity)
+            - transcription: 供 video_annotator 字幕渲染用 (text/speaker/speaker_role/start/end)
+            - audio_result: AudioPipeline 原始输出, 供 transcript 持久化使用
         """
         if not audio_path or not Path(audio_path).exists():
             logger.warning("音频文件不存在，跳过音频分析")
-            return [], [], []
+            return [], [], [], {}
 
         device = self.config.device
 
-        self._report(46, "audio_analysis", "vad", "Silero-VAD 语音活动检测...")
-        vad_segments = []
-        try:
-            from ai_engine.audio.vad import VoiceActivityDetector
-
-            vad = VoiceActivityDetector()
-            vad_segments = vad.detect(audio_path)
-            logger.info(f"VAD: 检测到 {len(vad_segments)} 个语音段")
-        except Exception as exc:
-            logger.warning(f"VAD 失败: {exc}")
-
-        self._report(50, "audio_analysis", "asr", "FunASR SenseVoice 语音识别...")
-        transcription = []
-        try:
-            from ai_engine.audio.asr import SpeechRecognizer
-
-            asr = SpeechRecognizer(model_name=self.config.asr_model, device=device)
-            if vad_segments and hasattr(asr, "transcribe_segments"):
-                transcription = asr.transcribe_segments(audio_path, vad_segments)
-            else:
-                transcription = asr.transcribe(audio_path)
-            logger.info(f"ASR: 转写 {len(transcription)} 段")
-            del asr
-        except Exception as exc:
-            logger.warning(f"ASR 失败: {exc}")
-
+        # 阶段进度: 46 ~ 68 留给整个音频管线. AudioPipeline 内部分多个子步骤,
+        # 这里只在入口和出口报告, 避免过度刷屏.
         self._report(
-            58, "audio_analysis", "diarization", "pyannote.audio 说话人分离..."
+            46,
+            "audio_analysis",
+            "audio_pipeline_start",
+            "启动音频管线: pyannote 3.1 + Paraformer-large...",
         )
-        try:
-            from ai_engine.audio.diarizer import SpeakerDiarizer
 
-            diarizer = SpeakerDiarizer(
+        try:
+            from ai_engine.audio.audio_pipeline import AudioPipeline
+
+            pipeline = AudioPipeline(
                 hf_token=self.config.hf_token or None,
                 device=device,
-                max_speakers=self.config.max_speakers,
+                num_speakers=min(self.config.max_speakers, 3),
+                sample_rate=self.config.sample_rate,
             )
-            # 关键: 即使 pyannote pipeline 不可用 (无 token / 网络不可达 / 加载失败),
-            # 也要调用 assign_speakers 触发兜底逻辑, 给所有段统一一个默认 speaker.
-            # 否则 transcription 全部 speaker=None, 下游角色推断 100% 失败,
-            # 大量话术规则会因"未听到 X 口令"而被扣分.
-            if transcription:
-                diarization = (
-                    diarizer.diarize(audio_path) if diarizer.pipeline is not None else []
-                )
-                transcription = diarizer.assign_speakers(transcription, diarization)
-            del diarizer
+            audio_result = pipeline.process(audio_path)
         except Exception as exc:
-            logger.warning(f"说话人分离失败: {exc}")
+            logger.exception(f"音频管线执行失败: {exc}")
+            return [], [], [], {}
 
-        self._report(
-            62,
-            "audio_analysis",
-            "role_inference",
-            "推断说话人角色(医生/护士/驾驶员)...",
-        )
-        speaker_roles = {}
-        try:
-            from ai_engine.audio.role_inferrer import SpeakerRoleInferrer
+        # 把 AudioPipeline 的输出投影成下游模块需要的旧字段名
+        segments = audio_result.get("segments", [])
+        audio_pipeline_events = audio_result.get("events", [])
 
-            inferrer = SpeakerRoleInferrer()
-            speaker_roles = inferrer.infer_roles(transcription)
-            transcription = inferrer.apply_roles(transcription, speaker_roles)
-        except Exception as exc:
-            logger.warning(f"角色推断失败: {exc}")
+        # 1) audio_events: 供 EventMerger 融合
+        audio_events: list[dict] = []
+        for ev in audio_pipeline_events:
+            audio_events.append(
+                {
+                    "time": ev.get("start", 0.0),
+                    "event_type": ev.get("rule_code") or ev.get("event_type"),
+                    "source": "audio",
+                    "actor": ev.get("speaker"),
+                    "confidence": ev.get("similarity", 0.5),
+                    "data": ev,
+                }
+            )
 
-        self._report(
-            65, "audio_analysis", "template_matching", "话术模板匹配 (15条规则)..."
-        )
-        voice_matches = []
-        audio_events = []
-        try:
-            from ai_engine.audio.template_matcher import TemplateMatcher
+        # 2) voice_matches: scoring engine 用 (兼容旧字段)
+        voice_matches: list[dict] = []
+        for ev in audio_pipeline_events:
+            voice_matches.append(
+                {
+                    "time": ev.get("start", 0.0),
+                    "end": ev.get("end", 0.0),
+                    "rule_code": ev.get("rule_code"),
+                    "rule_name": ev.get("rule_name"),
+                    "phase": ev.get("phase"),
+                    "score": 1.0,  # scoring engine 自己给 max_score, 这里只标记命中
+                    "similarity": ev.get("similarity", 0.0),
+                    "matched_text": ev.get("text", ""),
+                    "matched_template": ev.get("matched_template", ""),
+                    "speaker": ev.get("speaker"),
+                    "speaker_role": ev.get("role"),
+                    "role_correct": ev.get("role_correct", True),
+                }
+            )
 
-            matcher = TemplateMatcher()
-            voice_matches = matcher.match_transcript(transcription)
-            for match in voice_matches:
-                audio_events.append(
-                    {
-                        "time": match["time"],
-                        "event_type": match["rule_code"],
-                        "source": "audio",
-                        "confidence": match["similarity"],
-                        "data": match,
-                    }
-                )
-            logger.info(f"话术匹配: {len(voice_matches)} 条规则命中")
-        except Exception as exc:
-            logger.warning(f"话术模板匹配失败: {exc}")
+        # 3) transcription: 兼容旧 dict 形态, 给 video_annotator 字幕用
+        transcription: list[dict] = []
+        for seg in segments:
+            transcription.append(
+                {
+                    "start": seg.get("start", 0.0),
+                    "end": seg.get("end", 0.0),
+                    "text": seg.get("text", ""),
+                    "speaker": seg.get("speaker"),
+                    "speaker_role": seg.get("role") or "unknown",
+                    "confidence": seg.get("confidence", 1.0),
+                    "segment_type": seg.get("segment_type"),
+                }
+            )
 
+        stats = audio_result.get("stats", {})
         self._report(
             68,
             "audio_analysis",
             "complete",
             (
-                f"音频分析完成: {len(transcription)}段转写, "
-                f"{len(set(s.get('speaker_role', '') for s in transcription) - {'', 'unknown'})}种角色, "
-                f"{len(voice_matches)}条话术匹配"
+                f"音频分析完成: 转写={stats.get('asr_success', 0)}有效/"
+                f"{stats.get('asr_failed', 0)}无效, "
+                f"角色={len(audio_result.get('speaker_role_map', {}))}, "
+                f"话术命中={stats.get('matched_rules', 0)}"
             ),
         )
-        return audio_events, voice_matches, transcription
+        return audio_events, voice_matches, transcription, audio_result
 
     def _generate_annotated_video(
         self,
