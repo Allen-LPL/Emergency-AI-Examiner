@@ -15,7 +15,7 @@ API 变更说明:
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from loguru import logger
 
@@ -25,6 +25,11 @@ try:
     import torch
 except ImportError:  # pragma: no cover
     torch = None  # type: ignore
+
+try:
+    import soundfile as sf
+except ImportError:  # pragma: no cover
+    sf = None  # type: ignore
 
 try:
     from pyannote.audio import Pipeline as PyannotePipeline
@@ -129,11 +134,15 @@ class SpeakerDiarizer:
         if max_speakers is not None:
             kwargs["max_speakers"] = max_speakers
 
+        audio_input = self._load_waveform_input(audio_path)
+        if audio_input is None:
+            return []
+
         try:
             logger.info(
                 f"[Diarizer] 开始分离: audio={audio_path}, kwargs={kwargs}"
             )
-            diarization = self.pipeline(audio_path, **kwargs)
+            diarization = self.pipeline(audio_input, **kwargs)
         except Exception as exc:
             logger.exception(f"[Diarizer] 分离失败: {exc}")
             return []
@@ -156,6 +165,33 @@ class SpeakerDiarizer:
             f"speakers={speakers}, 总时长={total_dur:.1f}s"
         )
         return segments
+
+    @staticmethod
+    def _load_waveform_input(audio_path: str) -> dict[str, Any] | None:
+        """读取 wav 为 pyannote 内存输入, 避免 pipeline 内部走 torchcodec 解码。"""
+        if sf is None:
+            logger.warning("[Diarizer] soundfile 不可用, 无法构建 waveform 输入")
+            return None
+        if torch is None:
+            logger.warning("[Diarizer] torch 不可用, 无法构建 waveform 输入")
+            return None
+
+        try:
+            waveform, sample_rate = sf.read(audio_path, dtype="float32", always_2d=True)
+        except Exception as exc:
+            logger.exception(f"[Diarizer] 读取 waveform 失败: {exc}")
+            return None
+
+        waveform_tensor = torch.as_tensor(waveform, dtype=torch.float32)
+        if waveform_tensor.ndim != 2:
+            logger.warning(
+                f"[Diarizer] waveform 维度异常: ndim={waveform_tensor.ndim}"
+            )
+            return None
+
+        # soundfile 输出为 (time, channels), pyannote 需要 (channels, time)
+        waveform_tensor = waveform_tensor.transpose(0, 1).contiguous()
+        return {"waveform": waveform_tensor, "sample_rate": int(sample_rate)}
 
 
 __all__ = ["SpeakerDiarizer", "DEFAULT_DIARIZATION_MODEL", "UNKNOWN_SPEAKER"]

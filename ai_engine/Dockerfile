@@ -23,15 +23,7 @@ WORKDIR /app
 ENV PYTHONPATH=/app
 ENV CUDA_VISIBLE_DEVICES=0
 
-# Install backend requirements first (changes less often)
-COPY backend/requirements.txt /app/backend_requirements.txt
-RUN pip install --no-cache-dir \
-    -i https://mirrors.aliyun.com/pypi/simple/ \
-    --trusted-host mirrors.aliyun.com \
-    -r /app/backend_requirements.txt
-
-
-# Install AI engine requirements
+# Install AI common requirements
 COPY ai_engine/requirements.txt /app/ai_engine_requirements.txt
 RUN pip install \
     --no-cache-dir \
@@ -42,13 +34,20 @@ RUN pip install \
     --trusted-host pypi.tuna.tsinghua.edu.cn \
     -r /app/ai_engine_requirements.txt
 
-RUN pip uninstall -y torch torchvision torchaudio || true
-
+# Install fixed PyTorch CUDA 12.1
 RUN pip install --no-cache-dir \
     torch==2.5.1+cu121 \
     torchvision==0.20.1+cu121 \
     torchaudio==2.5.1+cu121 \
     --index-url https://download.pytorch.org/whl/cu121
+
+# Install AI libraries without pulling torch/cuda again
+RUN pip install --no-cache-dir --no-deps \
+    ultralytics==8.3.0 \
+    funasr==1.1.6 \
+    modelscope==1.18.0 \
+    pyannote.audio==3.1.1 \
+    silero-vad==5.1.2
 
 
 # Pre-download YOLO pose model
@@ -68,7 +67,7 @@ RUN python -c "from funasr import AutoModel; AutoModel(\
 ARG HF_TOKEN=""
 RUN if [ -n "$HF_TOKEN" ]; then \
     python -c "import os; from pyannote.audio import Pipeline; \
-Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', token=os.environ.get('HF_TOKEN'))" \
+    Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', token=os.environ.get('HF_TOKEN'))" \
     || echo "[warn] pyannote 预下载失败, 运行时会重试"; \
     else \
     echo "[warn] 未提供 HF_TOKEN build arg, 跳过 pyannote 预下载"; \
