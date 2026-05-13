@@ -118,7 +118,8 @@ class VideoAnnotator:
 
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        video_writer_fourcc = getattr(cv2, "VideoWriter_fourcc")
+        fourcc = video_writer_fourcc(*"avc1")
         writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
         if not writer.isOpened():
             cap.release()
