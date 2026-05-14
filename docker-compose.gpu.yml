@@ -1,10 +1,15 @@
 services:
   celery_worker:
-    # For local/non-Swarm `docker compose`, prefer the explicit service-level
-    # GPU request. The previous `deploy.resources...devices` stanza can be
-    # ignored depending on the compose path, which leaves the CUDA image
-    # running without injected NVIDIA driver access.
-    gpus: all
+    # runtime: nvidia 是最稳定的 GPU 透传方式, 要求宿主机已安装 nvidia-container-toolkit
+    # 并执行过 nvidia-ctk runtime configure --runtime=docker && systemctl restart docker
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
