@@ -26,7 +26,15 @@ cp .env.example .env
 # 编辑 .env, 设置 AI_DEVICE=cuda:0
 
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+
+# 或使用仓库自带脚本远端部署（默认自动加载 docker-compose.gpu.yml）
+./scripts/deploy.sh rebuild
 ```
+
+说明:
+- `docker-compose.gpu.yml` 现在使用 `gpus: all`，这是面向本地/非 Swarm `docker compose` 的显式 GPU 请求方式。
+- 若宿主机未安装 NVIDIA Container Toolkit，请先执行官方安装与 `nvidia-ctk runtime configure --runtime=docker` 配置，否则 CUDA 镜像仍会以普通容器方式启动。
+- 如需强制关闭 GPU 覆盖，可在执行脚本时设置 `DEPLOY_GPU=0 ./scripts/deploy.sh rebuild`。
 
 ### 2.3 验证部署
 ```bash

@@ -37,6 +37,9 @@ docker compose up -d
 
 # GPU 部署
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+
+# 一键远端部署(默认自动带上 docker-compose.gpu.yml; 如需禁用可设 DEPLOY_GPU=0)
+./scripts/deploy.sh rebuild
 ```
 
 访问:

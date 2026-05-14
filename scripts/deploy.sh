@@ -26,6 +26,7 @@
 #   DEPLOY_USER   远端 SSH 用户, 默认 root
 #   DEPLOY_HOST   远端主机, 默认 192.168.31.82
 #   DEPLOY_DIR    远端代码目录, 默认 /data/sdb/Emergency-AI-Examiner
+#   DEPLOY_GPU    是否加载 docker-compose.gpu.yml: auto(默认)/1=启用, 0=禁用
 # ============================================================================
 
 set -euo pipefail
@@ -40,6 +41,7 @@ ACTION="rebuild"   # 默认 rebuild, 因为 Dockerfile 用 COPY . . 把代码烤
 TAIL_LOGS=0
 AUTO_COMMIT_MSG=""
 DO_PUSH=1
+DEPLOY_GPU="${DEPLOY_GPU:-auto}"
 
 # ---- 参数解析 -----------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
@@ -87,6 +89,7 @@ echo "[deploy] 当前分支  : ${BRANCH}"
 echo "[deploy] origin    : ${ORIGIN_URL}"
 echo "[deploy] 远端目标  : ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}"
 echo "[deploy] docker 动作: ${ACTION}"
+echo "[deploy] GPU 覆盖  : ${DEPLOY_GPU}"
 echo "[deploy] 跟踪日志  : $([ ${TAIL_LOGS} -eq 1 ] && echo '是' || echo '否')"
 echo "============================================================"
 
@@ -125,7 +128,7 @@ echo "[deploy] 本地 HEAD: ${LOCAL_HEAD}"
 echo "[deploy] [3/4] 远端 git 同步并执行 docker 动作: ${ACTION}"
 
 ssh "${REMOTE_USER}@${REMOTE_HOST}" \
-  "REMOTE_DIR='${REMOTE_DIR}' BRANCH='${BRANCH}' ACTION='${ACTION}' bash -s" <<'REMOTE_EOF'
+  "REMOTE_DIR='${REMOTE_DIR}' BRANCH='${BRANCH}' ACTION='${ACTION}' DEPLOY_GPU='${DEPLOY_GPU}' bash -s" <<'REMOTE_EOF'
 set -euo pipefail
 
 cd "${REMOTE_DIR}"
@@ -138,27 +141,34 @@ git checkout -B "${BRANCH}" "origin/${BRANCH}"
 git reset --hard "origin/${BRANCH}"
 echo "[remote] 远端 HEAD: $(git rev-parse HEAD)"
 
+COMPOSE_ARGS=(-f docker-compose.yml)
+if [[ "${DEPLOY_GPU}" != "0" && -f docker-compose.gpu.yml ]]; then
+  COMPOSE_ARGS+=(-f docker-compose.gpu.yml)
+fi
+
+echo "[remote] docker compose 文件: ${COMPOSE_ARGS[*]}"
+
 # 确保宿主机绑定挂载源目录存在 (首次必要, 后续幂等无害)
 mkdir -p uploads outputs logs
 
 case "${ACTION}" in
   restart)
-    echo "[remote] docker compose restart api celery_worker"
-    docker compose restart api celery_worker
+    echo "[remote] docker compose ${COMPOSE_ARGS[*]} restart api celery_worker"
+    docker compose "${COMPOSE_ARGS[@]}" restart api celery_worker
     ;;
   rebuild)
-    echo "[remote] docker compose up -d --build api celery_worker"
-    docker compose up -d --build api celery_worker
+    echo "[remote] docker compose ${COMPOSE_ARGS[*]} up -d --build api celery_worker"
+    docker compose "${COMPOSE_ARGS[@]}" up -d --build api celery_worker
     ;;
   recreate)
-    echo "[remote] docker compose down && docker compose up -d (保留 db_data/redis_data/model_cache)"
-    docker compose down
-    docker compose up -d
+    echo "[remote] docker compose ${COMPOSE_ARGS[*]} down && up -d (保留 db_data/redis_data/model_cache)"
+    docker compose "${COMPOSE_ARGS[@]}" down
+    docker compose "${COMPOSE_ARGS[@]}" up -d
     ;;
 esac
 
 echo "[remote] docker compose ps:"
-docker compose ps
+docker compose "${COMPOSE_ARGS[@]}" ps
 REMOTE_EOF
 
 # ---- 4) 可选 tail 日志 --------------------------------------------------------
@@ -167,5 +177,11 @@ echo "[deploy] [4/4] 部署完成"
 if [[ ${TAIL_LOGS} -eq 1 ]]; then
   echo "[deploy] 跟踪 celery_worker / api 日志 (Ctrl+C 退出)..."
   ssh -t "${REMOTE_USER}@${REMOTE_HOST}" \
-    "cd ${REMOTE_DIR} && docker compose logs -f --tail=100 celery_worker api"
+    "cd ${REMOTE_DIR} && DEPLOY_GPU='${DEPLOY_GPU}' bash -lc '
+      compose_args=(-f docker-compose.yml)
+      if [[ "\${DEPLOY_GPU}" != "0" && -f docker-compose.gpu.yml ]]; then
+        compose_args+=(-f docker-compose.gpu.yml)
+      fi
+      docker compose "\${compose_args[@]}" logs -f --tail=100 celery_worker api
+    '"
 fi

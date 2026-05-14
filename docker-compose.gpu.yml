@@ -1,12 +1,11 @@
 services:
   celery_worker:
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    # For local/non-Swarm `docker compose`, prefer the explicit service-level
+    # GPU request. The previous `deploy.resources...devices` stanza can be
+    # ignored depending on the compose path, which leaves the CUDA image
+    # running without injected NVIDIA driver access.
+    gpus: all
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - CUDA_VISIBLE_DEVICES=0
