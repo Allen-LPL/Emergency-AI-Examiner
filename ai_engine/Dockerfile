@@ -41,13 +41,16 @@ RUN pip install --no-cache-dir \
     torchaudio==2.5.1+cu121 \
     --index-url https://download.pytorch.org/whl/cu121
 
-# Install AI libraries without pulling torch/cuda again
-RUN pip install --no-cache-dir --no-deps \
+# Install AI libraries.
+# Let ultralytics/FunASR/pyannote resolve their runtime deps normally;
+# only keep silero-vad on --no-deps because torch/torchaudio are already pinned above.
+RUN pip install --no-cache-dir \
     ultralytics==8.3.0 \
-    funasr==1.1.6 \
     modelscope==1.18.0 \
-    pyannote.audio==3.1.1 \
-    silero-vad==5.1.2
+    funasr==1.1.6 \
+    pyannote.audio==3.1.1
+
+RUN pip install --no-cache-dir --no-deps silero-vad==5.1.2
 
 
 # Pre-download YOLO pose model
