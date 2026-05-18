@@ -1,12 +1,13 @@
 # pyright: reportMissingImports=false
 """音频处理总编排 AudioPipeline.
 
-把 ai_engine/audio/* 各模块串联起来:
+新流程 (2026-05 重构):
 
     audio_path
         ↓ AudioPreprocessor          16kHz mono + 降噪 + loudnorm
-        ↓ SpeakerDiarizer            pyannote 3.1 → DiarizationSegment
-        ↓ SpeakerSegmentMerger       合并/切分 → SpeechSegment
+        ↓ VoiceActivityDetector      fsmn-vad → 有效人声片段
+        ↓ SpeakerDiarizer            pyannote 3.1 → speaker 标签 (可失败)
+        ↓ _build_speech_segments     VAD 片段 + diarization 时间重叠匹配 speaker
         ↓ ParaformerASR              FunASR Paraformer-large 转写 raw_text
         ↓ TextCleaner.clean          去标签 + 规范化
         ↓ DomainCorrector.correct    领域同音替换
@@ -15,28 +16,15 @@
         ↓ TemplateMatcher.match      话术规则命中
         → 返回 segments + events + speaker_role_map + hotwords
 
-每一步都有详细中文日志, 单一阶段失败不影响后续阶段。
-
-返回结构 (用于 ai_engine.pipeline 与 transcript 持久化):
-
-{
-    "audio_path": str,                # 预处理后的音频路径
-    "segments": [SpeechSegment.to_dict()],
-    "events":   [AudioEvent.to_dict()],
-    "speaker_role_map": {speaker: role},
-    "hotwords": [str],
-    "stats": {
-        "diarization_segments": int,
-        "merged_segments": int,
-        "asr_success": int,
-        "asr_failed": int,
-        "matched_rules": int,
-    },
-}
+关键设计:
+    - ASR 分段来自 VAD，不来自 diarization
+    - diarization 失败不影响 ASR，只会导致 speaker=UNKNOWN_SPEAKER
+    - 禁止整段音频进 ASR（杜绝 472s 整段幻听）
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
 from loguru import logger
@@ -51,17 +39,17 @@ from ai_engine.audio.domain_corrector import (
 from ai_engine.audio.paraformer_asr import ParaformerASR
 from ai_engine.audio.preprocessor import AudioPreprocessor
 from ai_engine.audio.role_binder import SpeakerRoleBinder
-from ai_engine.audio.speaker_segment import SpeakerSegmentMerger
 from ai_engine.audio.template_matcher import TemplateMatcher
 from ai_engine.audio.text_cleaner import clean_asr_text, is_valid_text
-from ai_engine.audio.types import SpeechSegment
+from ai_engine.audio.types import DiarizationSegment, SpeechSegment
+from ai_engine.audio.vad import VoiceActivityDetector, VadSegment
+
+MAX_ASR_SEGMENT_DURATION = 20.0
+MIN_ASR_SEGMENT_DURATION = 0.5
 
 
 class AudioPipeline:
-    """音频处理总编排.
-
-    模型只在第一次实例化时加载, 多次调用 process() 复用.
-    """
+    """音频处理总编排. 模型只在第一次实例化时加载, 多次调用 process() 复用."""
 
     def __init__(
         self,
@@ -71,30 +59,52 @@ class AudioPipeline:
         sample_rate: int = 16000,
         min_template_similarity: float = 0.35,
         manual_speaker_role_map: Optional[dict[str, str]] = None,
+        vad_model: str = "fsmn-vad",
     ) -> None:
         self.sample_rate = sample_rate
         self.manual_speaker_role_map = manual_speaker_role_map
 
-        # 1) 预处理: 不依赖模型, 轻量
         self.preprocessor = AudioPreprocessor(sample_rate=sample_rate)
 
-        # 2) 说话人分离 (pyannote 3.1)
+        self.vad = VoiceActivityDetector(model_name=vad_model)
+
         self.diarizer = SpeakerDiarizer(
             hf_token=hf_token,
             device=device,
             num_speakers=num_speakers,
         )
 
-        # 3) 段合并器 (无模型)
-        self.segment_merger = SpeakerSegmentMerger()
-
-        # 4) ASR (Paraformer-large via ModelScope)
         self.asr = ParaformerASR(device=device)
 
-        # 5) 角色绑定器 + 模板匹配 (无模型)
         self.role_binder = SpeakerRoleBinder()
         self.template_matcher = TemplateMatcher(
             min_similarity=min_template_similarity
+        )
+
+        self._log_diagnostics()
+
+    def _log_diagnostics(self) -> None:
+        try:
+            import torch
+            torch_ver = torch.__version__
+            cuda_ver = getattr(torch.version, "cuda", "N/A")
+            cuda_ok = torch.cuda.is_available()
+            cuda_cnt = torch.cuda.device_count() if cuda_ok else 0
+        except ImportError:
+            torch_ver, cuda_ver, cuda_ok, cuda_cnt = "N/A", "N/A", False, 0
+
+        logger.info(
+            "[AudioPipeline] 环境自检:\n"
+            f"  torch={torch_ver}, cuda={cuda_ver}\n"
+            f"  cuda_available={cuda_ok}, cuda_devices={cuda_cnt}\n"
+            f"  ASR model={self.asr.model_name}, device={self.asr.device}\n"
+            f"  VAD enabled={self.vad.enabled}\n"
+            f"  Diarizer model={self.diarizer.model_name}, "
+            f"enabled={self.diarizer.pipeline is not None}\n"
+            f"  HF_TOKEN={bool(os.environ.get('HF_TOKEN'))}, "
+            f"HUGGINGFACE_HUB_TOKEN="
+            f"{bool(os.environ.get('HUGGINGFACE_HUB_TOKEN'))}, "
+            f"AI_HF_TOKEN={bool(os.environ.get('AI_HF_TOKEN'))}"
         )
 
     # ------------------------------------------------------------------ #
@@ -104,7 +114,6 @@ class AudioPipeline:
         exam_id: Optional[int] = None,
         manual_speaker_role_map: Optional[dict[str, str]] = None,
     ) -> dict[str, Any]:
-        """执行完整音频管线."""
         logger.info(f"[AudioPipeline] 开始: audio={audio_path}, exam_id={exam_id}")
 
         # ------ 阶段 1: 预处理 ------
@@ -112,35 +121,42 @@ class AudioPipeline:
             preprocessed = self.preprocessor.process(audio_path)
         except Exception as exc:
             logger.exception(f"[AudioPipeline] 预处理失败: {exc}")
-            preprocessed = audio_path  # 兜底: 用原始音频继续
+            preprocessed = audio_path
 
-        # ------ 阶段 2: 说话人分离 ------
-        diar_segments = self.diarizer.diarize(preprocessed)
+        duration = self._probe_duration(preprocessed)
+        logger.info(f"[AudioPipeline] audio duration={duration:.1f}s")
+
+        # ------ 阶段 2: VAD (主分段来源) ------
+        vad_segments = self.vad.detect(preprocessed)
+        vad_speech_dur = sum(s.end - s.start for s in vad_segments)
         logger.info(
-            f"[AudioPipeline] diarization: {len(diar_segments)}段, "
-            f"speakers={sorted({s.speaker for s in diar_segments})}"
+            f"[AudioPipeline] VAD: {len(vad_segments)}段, "
+            f"speech_duration={vad_speech_dur:.1f}s"
         )
 
-        # ------ 阶段 3: 段合并 ------
-        if not diar_segments:
-            # pyannote 不可用时, 走单 speaker 兜底:
-            # 把整个音频当作一个 SPEAKER_DEFAULT 段, 给 ASR 全文转写
-            duration = self._probe_duration(preprocessed)
-            speech_segments = [
-                SpeechSegment(
-                    start=0.0,
-                    end=duration,
-                    speaker=UNKNOWN_SPEAKER,
-                )
-            ] if duration > 0 else []
+        if not vad_segments:
             logger.warning(
-                f"[AudioPipeline] diarization 空, 退化为单 speaker 模式 "
-                f"({UNKNOWN_SPEAKER}, duration={duration:.1f}s)"
+                "[AudioPipeline] VAD 未检测到有效人声, 跳过 ASR"
             )
-        else:
-            speech_segments = self.segment_merger.merge(diar_segments)
+            return self._empty_result(preprocessed)
 
-        # ------ 阶段 4: ASR ------
+        # ------ 阶段 3: 说话人分离 (可失败) ------
+        diar_segments = self.diarizer.diarize(preprocessed)
+        diar_ok = len(diar_segments) > 0
+        logger.info(
+            f"[AudioPipeline] diarization: {len(diar_segments)}段, "
+            f"speakers={sorted({s.speaker for s in diar_segments}) if diar_ok else '[]'}, "
+            f"fallback_speaker={'no' if diar_ok else 'yes'}"
+        )
+
+        # ------ 阶段 4: VAD → SpeechSegment + speaker 匹配 ------
+        speech_segments = self._build_speech_segments(vad_segments, diar_segments)
+        logger.info(
+            f"[AudioPipeline] speech_segments: {len(speech_segments)}段 "
+            f"(来自 {len(vad_segments)} VAD segments)"
+        )
+
+        # ------ 阶段 5: ASR ------
         speech_segments = self.asr.transcribe_segments(
             audio_path=preprocessed,
             segments=speech_segments,
@@ -148,7 +164,7 @@ class AudioPipeline:
             sample_rate=self.sample_rate,
         )
 
-        # ------ 阶段 5: 文本清洗 + 纠错 + 分类 ------
+        # ------ 阶段 6: 文本清洗 + 纠错 + 分类 ------
         asr_success = 0
         asr_failed = 0
         cleaned_segments: list[SpeechSegment] = []
@@ -159,19 +175,18 @@ class AudioPipeline:
                 seg.text = corrected
                 seg.segment_type = classify_segment_type(corrected)
                 asr_success += 1
-                cleaned_segments.append(seg)
             else:
-                # 文本无效但段本身保留 (供前端时间轴展示), 标记 unknown
                 seg.text = corrected or None
                 seg.segment_type = "unknown"
                 asr_failed += 1
-                cleaned_segments.append(seg)
+            cleaned_segments.append(seg)
 
         logger.info(
-            f"[AudioPipeline] 文本清洗完成: 有效={asr_success}, 无效={asr_failed}"
+            f"[AudioPipeline] ASR segments: {len(cleaned_segments)}, "
+            f"有效={asr_success}, 无效={asr_failed}"
         )
 
-        # ------ 阶段 6: 角色绑定 ------
+        # ------ 阶段 7: 角色绑定 ------
         manual_map = manual_speaker_role_map or self.manual_speaker_role_map
         speaker_role_map = self.role_binder.bind(
             cleaned_segments, manual_map=manual_map
@@ -180,10 +195,9 @@ class AudioPipeline:
             cleaned_segments, speaker_role_map
         )
 
-        # ------ 阶段 7: 模板匹配 ------
+        # ------ 阶段 8: 模板匹配 ------
         events = self.template_matcher.match(cleaned_segments)
 
-        # ------ 输出 ------
         result = {
             "audio_path": preprocessed,
             "segments": [s.to_dict() for s in cleaned_segments],
@@ -191,11 +205,15 @@ class AudioPipeline:
             "speaker_role_map": speaker_role_map,
             "hotwords": get_hotwords(),
             "stats": {
+                "audio_duration": round(duration, 1),
+                "vad_segments": len(vad_segments),
+                "vad_speech_duration": round(vad_speech_dur, 1),
                 "diarization_segments": len(diar_segments),
-                "merged_segments": len(speech_segments),
+                "asr_segments": len(speech_segments),
                 "asr_success": asr_success,
                 "asr_failed": asr_failed,
                 "matched_rules": len(events),
+                "fallback_speaker": not diar_ok,
             },
         }
         logger.info(
@@ -207,16 +225,90 @@ class AudioPipeline:
 
     # ------------------------------------------------------------------ #
     @staticmethod
-    def _probe_duration(audio_path: str) -> float:
-        """读取音频时长 (秒). 失败返回 0."""
-        try:
-            import soundfile as sf
+    def _build_speech_segments(
+        vad_segments: list[VadSegment],
+        diar_segments: list[DiarizationSegment],
+    ) -> list[SpeechSegment]:
+        """从 VAD 片段构建 SpeechSegment，用 diarization 时间重叠匹配 speaker。
 
-            with sf.SoundFile(audio_path) as f:
+        长片段按 MAX_ASR_SEGMENT_DURATION 切分，短片段丢弃。
+        """
+        result: list[SpeechSegment] = []
+        for vad in vad_segments:
+            speaker = _match_speaker_by_overlap(vad, diar_segments)
+            seg_dur = vad.end - vad.start
+
+            if seg_dur > MAX_ASR_SEGMENT_DURATION:
+                cur = vad.start
+                while cur < vad.end:
+                    end = min(cur + MAX_ASR_SEGMENT_DURATION, vad.end)
+                    if (end - cur) >= MIN_ASR_SEGMENT_DURATION:
+                        result.append(SpeechSegment(
+                            start=round(cur, 3),
+                            end=round(end, 3),
+                            speaker=speaker,
+                        ))
+                    cur = end
+            else:
+                result.append(SpeechSegment(
+                    start=round(vad.start, 3),
+                    end=round(vad.end, 3),
+                    speaker=speaker,
+                ))
+
+        result.sort(key=lambda s: s.start)
+        return result
+
+    @staticmethod
+    def _probe_duration(audio_path: str) -> float:
+        try:
+            import soundfile as _sf
+            with _sf.SoundFile(audio_path) as f:
                 return f.frames / float(f.samplerate)
         except Exception as exc:
             logger.warning(f"[AudioPipeline] 读取音频时长失败: {exc}")
             return 0.0
+
+    @staticmethod
+    def _empty_result(audio_path: str) -> dict[str, Any]:
+        return {
+            "audio_path": audio_path,
+            "segments": [],
+            "events": [],
+            "speaker_role_map": {},
+            "hotwords": get_hotwords(),
+            "stats": {
+                "audio_duration": 0.0,
+                "vad_segments": 0,
+                "vad_speech_duration": 0.0,
+                "diarization_segments": 0,
+                "asr_segments": 0,
+                "asr_success": 0,
+                "asr_failed": 0,
+                "matched_rules": 0,
+                "fallback_speaker": True,
+            },
+        }
+
+
+def _match_speaker_by_overlap(
+    vad: VadSegment,
+    diar_segments: list[DiarizationSegment],
+) -> str:
+    """在 diarization 结果中找与 vad 时间重叠最大的 speaker。"""
+    if not diar_segments:
+        return UNKNOWN_SPEAKER
+
+    best_speaker = UNKNOWN_SPEAKER
+    best_overlap = 0.0
+
+    for diar in diar_segments:
+        overlap = max(0.0, min(vad.end, diar.end) - max(vad.start, diar.start))
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_speaker = diar.speaker
+
+    return best_speaker
 
 
 __all__ = ["AudioPipeline"]

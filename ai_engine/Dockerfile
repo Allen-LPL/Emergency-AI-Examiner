@@ -23,6 +23,17 @@ WORKDIR /app
 ENV PYTHONPATH=/app
 ENV CUDA_VISIBLE_DEVICES=0
 
+# Install backend requirements (celery, redis, etc.)
+COPY backend/requirements.txt /app/backend_requirements.txt
+RUN pip install \
+    --no-cache-dir \
+    --default-timeout=1000 \
+    --retries=20 \
+    --timeout=1000 \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    --trusted-host pypi.tuna.tsinghua.edu.cn \
+    -r /app/backend_requirements.txt
+
 # Install AI common requirements
 COPY ai_engine/requirements.txt /app/ai_engine_requirements.txt
 RUN pip install \

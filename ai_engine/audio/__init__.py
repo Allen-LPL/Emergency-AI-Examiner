@@ -1,18 +1,19 @@
 # pyright: reportMissingImports=false
 """ai_engine.audio 包入口.
 
-新音频管线 (2026-05 重构, 替代旧 asr.py / vad.py / role_inferrer.py / keyword_matcher.py):
+音频管线架构:
 
     AudioPipeline (audio_pipeline.py)
-        ├─ AudioPreprocessor (preprocessor.py)
-        ├─ SpeakerDiarizer    (diarizer.py)              pyannote.audio 3.1
-        ├─ SpeakerSegmentMerger (speaker_segment.py)
-        ├─ ParaformerASR      (paraformer_asr.py)        FunASR Paraformer-large
-        ├─ TextCleaner        (text_cleaner.py)
-        ├─ DomainCorrector    (domain_corrector.py)      急救热词与同音替换
-        ├─ SpeakerRoleBinder  (role_binder.py)           speaker → doctor/nurse/driver
-        └─ TemplateMatcher    (template_matcher.py)      话术模板匹配
+        ├─ AudioPreprocessor     (preprocessor.py)         16kHz mono + 降噪
+        ├─ VoiceActivityDetector (vad.py)                  fsmn-vad 人声检测
+        ├─ SpeakerDiarizer       (diarizer.py)             pyannote 3.1 (可失败)
+        ├─ ParaformerASR         (paraformer_asr.py)       FunASR Paraformer-large
+        ├─ TextCleaner           (text_cleaner.py)
+        ├─ DomainCorrector       (domain_corrector.py)     急救热词与同音替换
+        ├─ SpeakerRoleBinder     (role_binder.py)          speaker → doctor/nurse/driver
+        └─ TemplateMatcher       (template_matcher.py)     话术模板匹配
 
+ASR 分段来自 VAD (非 diarization)，diarization 仅提供 speaker 标签。
 外部仍保留 AudioExtractor (extractor.py) 用于从 mp4 提取原始 wav.
 """
 
@@ -42,16 +43,19 @@ from ai_engine.audio.types import (
     DiarizationSegment,
     SpeechSegment,
 )
+from ai_engine.audio.vad import VoiceActivityDetector, VadSegment
 
 __all__ = [
     # 数据结构
     "AudioEvent",
     "DiarizationSegment",
     "SpeechSegment",
+    "VadSegment",
     # 编排器
     "AudioPipeline",
     # 子模块
     "AudioPreprocessor",
+    "VoiceActivityDetector",
     "SpeakerDiarizer",
     "SpeakerSegmentMerger",
     "ParaformerASR",

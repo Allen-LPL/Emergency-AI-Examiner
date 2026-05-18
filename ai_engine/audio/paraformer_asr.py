@@ -43,27 +43,26 @@ DEFAULT_MODEL = (
 DEFAULT_PUNC_MODEL = "iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch"
 
 
-class ParaformerASR:
-    """FunASR Paraformer 封装, 仅在初始化时加载一次模型.
+DEFAULT_VAD_MODEL = "fsmn-vad"
 
-    Args:
-        model_name: 主 ASR 模型 ID (ModelScope), 默认 paraformer-large.
-        punc_model: 标点模型 ID, None 表示禁用标点.
-        device: "cuda:0" / "cpu", 自动降级.
-        hub: 模型来源, "ms" = ModelScope, "hf" = HuggingFace, 默认 ms.
-        disable_update: 关闭 funasr 启动时的版本检查, 减少日志噪音.
-    """
+
+class ParaformerASR:
+    """FunASR Paraformer 封装, 仅在初始化时加载一次模型."""
 
     def __init__(
         self,
         model_name: str = DEFAULT_MODEL,
         punc_model: Optional[str] = DEFAULT_PUNC_MODEL,
+        vad_model: Optional[str] = DEFAULT_VAD_MODEL,
+        vad_kwargs: Optional[dict] = None,
         device: str = "cuda:0",
         hub: str = "ms",
         disable_update: bool = True,
     ) -> None:
         self.model_name = model_name
         self.punc_model = punc_model
+        self.vad_model = vad_model
+        self.vad_kwargs = vad_kwargs or {"max_single_segment_time": 30000}
         self.hub = hub
         self.disable_update = disable_update
         self.device = self._resolve_device(device)
@@ -99,9 +98,10 @@ class ParaformerASR:
         try:
             logger.info(
                 f"[ParaformerASR] 加载模型: model={self.model_name}, "
-                f"punc={self.punc_model}, device={self.device}, hub={self.hub}"
+                f"punc={self.punc_model}, vad={self.vad_model}, "
+                f"device={self.device}, hub={self.hub}"
             )
-            kwargs = {
+            kwargs: dict = {
                 "model": self.model_name,
                 "device": self.device,
                 "hub": self.hub,
@@ -109,6 +109,9 @@ class ParaformerASR:
             }
             if self.punc_model:
                 kwargs["punc_model"] = self.punc_model
+            if self.vad_model:
+                kwargs["vad_model"] = self.vad_model
+                kwargs["vad_kwargs"] = self.vad_kwargs
 
             self.model = AutoModel(**kwargs)
             logger.info("[ParaformerASR] 模型加载完成")

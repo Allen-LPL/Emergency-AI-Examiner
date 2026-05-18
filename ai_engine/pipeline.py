@@ -311,6 +311,7 @@ class ExaminationPipeline:
                 device=device,
                 num_speakers=min(self.config.max_speakers, 3),
                 sample_rate=self.config.sample_rate,
+                vad_model=self.config.vad_model,
             )
             audio_result = pipeline.process(audio_path)
         except Exception as exc:
