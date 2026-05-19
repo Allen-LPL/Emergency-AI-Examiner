@@ -312,6 +312,11 @@ class ExaminationPipeline:
                 num_speakers=min(self.config.max_speakers, 3),
                 sample_rate=self.config.sample_rate,
                 vad_model=self.config.vad_model,
+                funasr_ws_url=self.config.funasr_ws_url,
+                funasr_ws_timeout=self.config.funasr_ws_timeout,
+                whisper_http_url=self.config.whisper_http_url,
+                whisper_http_timeout=self.config.whisper_http_timeout,
+                enable_external_asr=self.config.enable_external_asr,
             )
             audio_result = pipeline.process(audio_path)
         except Exception as exc:
@@ -467,8 +472,10 @@ class ExaminationPipeline:
             from ai_engine.audio.extractor import AudioExtractor
 
             extractor = AudioExtractor(sample_rate=self.config.sample_rate)
-            audio_dir = Path(video_path).parent
-            audio_out = str(audio_dir / "exam_audio.wav")
+            output_dir = Path(self.config.output_dir).resolve()
+            output_dir.mkdir(parents=True, exist_ok=True)
+            video_stem = Path(video_path).stem
+            audio_out = str(output_dir / f"{video_stem}_audio.wav")
             return extractor.extract_from_video(video_path, audio_out)
         except Exception as exc:
             logger.error(f"Audio extraction failed: {exc}")

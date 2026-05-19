@@ -13,17 +13,30 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import numpy as np
 from loguru import logger
 
+try:
+    import noisereduce as nr
+except ImportError:
+    nr = None
+
+try:
+    import soundfile as sf
+except ImportError:
+    sf = None
+
 # ffmpeg 滤镜链 (顺序敏感):
-#   highpass=f=80   去除低频电源噪与桌面震动
-#   lowpass=f=8000  限制高频, 16kHz 采样下 8k 是奈奎斯特上限的实用值
-#   afftdn          基于 FFT 的自适应降噪
-#   loudnorm        EBU R128 响度归一 (I=-16 LUFS, TP=-1.5 dB)
+#   highpass=f=80           去除低频电源噪与桌面震动
+#   lowpass=f=8000          限制高频, 16kHz 采样下 8k 是奈奎斯特上限的实用值
+#   afftdn=nf=-20:tn=1      FFT 降噪, nf=噪声底限(dB) tn=跟踪速率(更积极)
+#   anlmdn=s=0.0001:m=15    非局部均值降噪, 对多人混声更有效
+#   loudnorm                EBU R128 响度归一 (I=-16 LUFS, TP=-1.5 dB)
 DEFAULT_FILTER_CHAIN = (
     "highpass=f=80,"
     "lowpass=f=8000,"
-    "afftdn,"
+    "afftdn=nf=-20:tn=1,"
+    "anlmdn=s=0.0001:m=15,"
     "loudnorm=I=-16:TP=-1.5:LRA=11"
 )
 
@@ -42,10 +55,12 @@ class AudioPreprocessor:
         sample_rate: int = 16000,
         filter_chain: str = DEFAULT_FILTER_CHAIN,
         ffmpeg_bin: str = "ffmpeg",
+        enable_noisereduce: bool = True,
     ) -> None:
         self.sample_rate = sample_rate
         self.filter_chain = filter_chain
         self.ffmpeg_bin = ffmpeg_bin
+        self.enable_noisereduce = enable_noisereduce and nr is not None and sf is not None
 
     def process(self, input_path: str, output_path: str | None = None) -> str:
         """把 input 文件 (wav/mp4/mov 任意 ffmpeg 支持的容器) 处理为 16kHz mono wav.
@@ -111,9 +126,36 @@ class AudioPreprocessor:
 
         size_mb = out_path.stat().st_size / (1024 * 1024) if out_path.exists() else 0
         logger.info(
-            f"[音频预处理] 完成: {out_path} ({size_mb:.2f} MB)"
+            f"[音频预处理] ffmpeg完成: {out_path} ({size_mb:.2f} MB)"
         )
+
+        if self.enable_noisereduce:
+            self._apply_noisereduce(str(out_path))
+
         return str(out_path)
+
+    def _apply_noisereduce(self, wav_path: str) -> None:
+        assert nr is not None and sf is not None
+        try:
+            waveform, sr = sf.read(wav_path, dtype="float32")
+            denoised = nr.reduce_noise(
+                y=waveform,
+                sr=sr,
+                stationary=False,
+                prop_decrease=0.85,
+                n_fft=512,
+                time_constant_s=2.0,
+                freq_mask_smooth_hz=500,
+                time_mask_smooth_ms=50,
+                n_jobs=1,
+            )
+            peak = np.max(np.abs(denoised))
+            if peak > 0:
+                denoised = denoised / peak * 0.95
+            sf.write(wav_path, denoised, sr, subtype="PCM_16")
+            logger.info(f"[音频预处理] noisereduce 二次降噪完成: {wav_path}")
+        except Exception as exc:
+            logger.warning(f"[音频预处理] noisereduce 失败, 跳过: {exc}")
 
 
 __all__ = ["AudioPreprocessor", "DEFAULT_FILTER_CHAIN"]

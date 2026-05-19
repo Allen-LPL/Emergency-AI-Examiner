@@ -68,3 +68,6 @@ backend/alembic/versions/*.pyc
 院外心脏骤停急救考核评分表.xlsx
 .history/
 videos/
+
+test.md
+test copy.md

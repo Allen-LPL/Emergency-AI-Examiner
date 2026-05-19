@@ -52,6 +52,26 @@ class AIEngineConfig(BaseSettings):
         default=4, description="Maximum number of speakers to detect"
     )
 
+    # External ASR services
+    funasr_ws_url: str = Field(
+        default="ws://172.17.0.1:10095",
+        description="FunASR WebSocket server URL (offline mode)",
+    )
+    funasr_ws_timeout: int = Field(
+        default=120, description="FunASR WebSocket timeout in seconds",
+    )
+    whisper_http_url: str = Field(
+        default="http://172.28.0.1:9000/asr",
+        description="Whisper ASR HTTP API endpoint",
+    )
+    whisper_http_timeout: int = Field(
+        default=120, description="Whisper HTTP request timeout in seconds",
+    )
+    enable_external_asr: bool = Field(
+        default=True,
+        description="Enable external ASR services (FunASR WS + Whisper HTTP)",
+    )
+
     # 路径相关:
     #   upload_dir / output_dir 默认相对路径, 由调用方在使用前通过 Path(...).resolve()
     #   转为绝对路径, 以适配 docker 多容器场景 (api 与 celery_worker 是两个容器,

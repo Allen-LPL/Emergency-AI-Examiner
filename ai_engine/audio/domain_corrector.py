@@ -23,47 +23,10 @@ from ai_engine.audio.types import (
 )
 
 
-# ------------------------------------------------------------------ #
-# 热词表 (按急救动作分组, 便于后续维护)
-# ------------------------------------------------------------------ #
-HOTWORDS_COMPRESSION = [
-    "胸外按压", "继续按压", "暂停按压", "停止按压", "恢复按压",
-    "按压深度", "五到六公分", "按压频率", "一百到一百二十次",
-    "注意回弹", "减少中断", "心肺复苏",
-]
+from ai_engine.audio.hotwords import get_hotword_list as _get_hotword_list
+from ai_engine.audio.hotwords import get_paraformer_hotword_prompt as _get_hotword_prompt
 
-HOTWORDS_DEFIBRILLATION = [
-    "室颤", "无脉性室速", "准备除颤", "除颤", "充电", "放电",
-    "所有人离开", "不要接触患者", "清场", "电击",
-    "导电糊", "焦耳", "双相波", "二百焦",
-]
-
-HOTWORDS_AIRWAY = [
-    "开放气道", "清理口腔异物", "球囊通气", "简易呼吸器",
-    "观察胸廓起伏", "气道阻力", "插管", "准备插管",
-    "通气频率", "每六秒一次",
-]
-
-HOTWORDS_MEDICATION = [
-    "建立静脉通路", "开放静脉", "肾上腺素", "一毫克",
-    "静脉推注", "生理盐水", "冲管", "给药完成",
-    "心电监护", "心电图",
-]
-
-HOTWORDS_TRANSPORT = [
-    "准备转运", "铲式担架", "固定患者",
-    "家属", "病史", "过敏史", "用药史", "发病时间",
-    "既往史", "最后正常时间", "知情同意",
-]
-
-# 全部热词合并 (用于 ParaformerASR.hotword 参数)
-ALL_HOTWORDS: list[str] = (
-    HOTWORDS_COMPRESSION
-    + HOTWORDS_DEFIBRILLATION
-    + HOTWORDS_AIRWAY
-    + HOTWORDS_MEDICATION
-    + HOTWORDS_TRANSPORT
-)
+ALL_HOTWORDS: list[str] = _get_hotword_list()
 
 
 # ------------------------------------------------------------------ #
@@ -133,18 +96,12 @@ _CN_NUM_RE = re.compile(f"[{_CN_NUMS}]+")
 # ------------------------------------------------------------------ #
 def get_hotwords() -> list[str]:
     """返回完整热词列表 (去重保序)."""
-    seen = set()
-    out = []
-    for w in ALL_HOTWORDS:
-        if w not in seen:
-            seen.add(w)
-            out.append(w)
-    return out
+    return _get_hotword_list()
 
 
 def get_hotword_prompt() -> str:
     """返回 ParaformerASR.hotword 接受的字符串 (空格分隔)."""
-    return " ".join(get_hotwords())
+    return _get_hotword_prompt()
 
 
 def correct(text: str | None) -> str:

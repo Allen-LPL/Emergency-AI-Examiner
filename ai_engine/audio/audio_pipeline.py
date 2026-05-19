@@ -25,16 +25,22 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor, Future
 from typing import Any, Optional
 
 from loguru import logger
 
+from ai_engine.audio.asr_merger import ASRMerger
 from ai_engine.audio.diarizer import SpeakerDiarizer, UNKNOWN_SPEAKER
 from ai_engine.audio.domain_corrector import (
     classify_segment_type,
     correct,
-    get_hotword_prompt,
-    get_hotwords,
+)
+from ai_engine.audio.funasr_ws_client import FunASRWebSocketClient
+from ai_engine.audio.hotwords import (
+    get_funasr_ws_hotwords,
+    get_hotword_list,
+    get_paraformer_hotword_prompt,
 )
 from ai_engine.audio.paraformer_asr import ParaformerASR
 from ai_engine.audio.preprocessor import AudioPreprocessor
@@ -43,6 +49,7 @@ from ai_engine.audio.template_matcher import TemplateMatcher
 from ai_engine.audio.text_cleaner import clean_asr_text, is_valid_text
 from ai_engine.audio.types import DiarizationSegment, SpeechSegment
 from ai_engine.audio.vad import VoiceActivityDetector, VadSegment
+from ai_engine.audio.whisper_http_client import WhisperHTTPClient
 
 MAX_ASR_SEGMENT_DURATION = 20.0
 MIN_ASR_SEGMENT_DURATION = 0.5
@@ -60,9 +67,15 @@ class AudioPipeline:
         min_template_similarity: float = 0.35,
         manual_speaker_role_map: Optional[dict[str, str]] = None,
         vad_model: str = "fsmn-vad",
+        funasr_ws_url: str = "ws://172.17.0.1:10095",
+        funasr_ws_timeout: int = 120,
+        whisper_http_url: str = "http://172.28.0.1:9000/asr",
+        whisper_http_timeout: int = 120,
+        enable_external_asr: bool = True,
     ) -> None:
         self.sample_rate = sample_rate
         self.manual_speaker_role_map = manual_speaker_role_map
+        self.enable_external_asr = enable_external_asr
 
         self.preprocessor = AudioPreprocessor(sample_rate=sample_rate)
 
@@ -75,6 +88,14 @@ class AudioPipeline:
         )
 
         self.asr = ParaformerASR(device=device)
+
+        self.funasr_ws = FunASRWebSocketClient(
+            url=funasr_ws_url, timeout=funasr_ws_timeout,
+        )
+        self.whisper_http = WhisperHTTPClient(
+            url=whisper_http_url, timeout=whisper_http_timeout,
+        )
+        self.asr_merger = ASRMerger()
 
         self.role_binder = SpeakerRoleBinder()
         self.template_matcher = TemplateMatcher(
@@ -156,13 +177,70 @@ class AudioPipeline:
             f"(来自 {len(vad_segments)} VAD segments)"
         )
 
-        # ------ 阶段 5: ASR ------
+        # ------ 阶段 5: 三路并行 ASR ------
+        funasr_ws_future: Future | None = None
+        whisper_future: Future | None = None
+        executor: ThreadPoolExecutor | None = None
+
+        if self.enable_external_asr:
+            executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ext_asr")
+            hotwords_json = get_funasr_ws_hotwords()
+            funasr_ws_future = executor.submit(
+                self.funasr_ws.transcribe, preprocessed, hotwords_json,
+            )
+            whisper_future = executor.submit(
+                self.whisper_http.transcribe, preprocessed,
+            )
+
         speech_segments = self.asr.transcribe_segments(
             audio_path=preprocessed,
             segments=speech_segments,
-            hotword=get_hotword_prompt(),
+            hotword=get_paraformer_hotword_prompt(),
             sample_rate=self.sample_rate,
         )
+
+        funasr_result: dict[str, Any] = {"text": "", "segments": []}
+        whisper_result: dict[str, Any] = {"text": "", "segments": []}
+
+        if funasr_ws_future is not None:
+            try:
+                funasr_result = funasr_ws_future.result(timeout=150)
+                logger.info(
+                    f"[AudioPipeline] FunASR WS: "
+                    f"{len(funasr_result.get('text', ''))}字, "
+                    f"{len(funasr_result.get('segments', []))}段"
+                )
+            except Exception as exc:
+                logger.warning(f"[AudioPipeline] FunASR WS 失败: {exc}")
+
+        if whisper_future is not None:
+            try:
+                whisper_result = whisper_future.result(timeout=150)
+                logger.info(
+                    f"[AudioPipeline] Whisper HTTP: "
+                    f"{len(whisper_result.get('text', ''))}字"
+                )
+            except Exception as exc:
+                logger.warning(f"[AudioPipeline] Whisper HTTP 失败: {exc}")
+
+        if executor is not None:
+            executor.shutdown(wait=False)
+
+        # ------ 阶段 5.5: 三路 ASR 结果合并 ------
+        paraformer_seg_dicts = [
+            {"start": s.start, "end": s.end, "raw_text": s.raw_text, "text": s.raw_text,
+             "speaker": s.speaker}
+            for s in speech_segments
+        ]
+        merged_seg_dicts = self.asr_merger.merge(
+            paraformer_seg_dicts, funasr_result, whisper_result,
+        )
+        merged_text_map: dict[int, str] = {}
+        for i, md in enumerate(merged_seg_dicts):
+            merged_text_map[i] = md.get("text") or ""
+        for i, seg in enumerate(speech_segments):
+            if i in merged_text_map:
+                seg.raw_text = merged_text_map[i] or seg.raw_text
 
         # ------ 阶段 6: 文本清洗 + 纠错 + 分类 ------
         asr_success = 0
@@ -203,7 +281,11 @@ class AudioPipeline:
             "segments": [s.to_dict() for s in cleaned_segments],
             "events": [e.to_dict() for e in events],
             "speaker_role_map": speaker_role_map,
-            "hotwords": get_hotwords(),
+            "hotwords": get_hotword_list(),
+            "external_asr": {
+                "funasr_text": funasr_result.get("text", ""),
+                "whisper_text": whisper_result.get("text", ""),
+            },
             "stats": {
                 "audio_duration": round(duration, 1),
                 "vad_segments": len(vad_segments),
@@ -276,7 +358,8 @@ class AudioPipeline:
             "segments": [],
             "events": [],
             "speaker_role_map": {},
-            "hotwords": get_hotwords(),
+            "hotwords": get_hotword_list(),
+            "external_asr": {"funasr_text": "", "whisper_text": ""},
             "stats": {
                 "audio_duration": 0.0,
                 "vad_segments": 0,
