@@ -132,6 +132,25 @@ services:
     networks:
       - examiner
 
+  whisper-api:
+    image: onerahmet/openai-whisper-asr-webservice:latest
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    ports:
+      - "9000:9000"
+    environment:
+      - ASR_MODEL=medium  # 可选: tiny, base, small, medium, large
+      - ASR_LANGUAGE=zh  # 可选: 指定默认语言
+    volumes:
+      - /data/sdb/whisper/whisper_models:/root/.cache/whisper
+    networks:
+      - examiner
+
 volumes:
   db_data:
   redis_data:
