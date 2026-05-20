@@ -81,22 +81,27 @@ class WhisperHTTPClient:
     def _parse_response(response: httpx.Response) -> tuple[str, str, list]:
         """兼容 JSON 与纯文本两种响应。
 
-        whisper-asr-webservice 在 output=json 时返回 JSON;
-        某些 fork / 旧版本即使带了 output=json 仍可能返回纯文本,
-        这里两种都吃掉, 不再因为 JSONDecodeError 整路丢空.
+        whisper-asr-webservice 在 output=json 时返回 JSON, 但 Content-Type 不一定带 json
+        (实测有的 fork 是 text/plain), 所以双重判断: header 含 json 或 body 看起来像 JSON
+        ({ / [ 开头) 都先按 JSON 解析; JSON 解析失败再退回纯文本兜底.
+
+        历史 bug: 早期版本只看 Content-Type, 结果 Whisper 服务返回 JSON 但 header 是
+        text/plain, 整段 JSON 字符串被当成 text 存进去 (出现过 66292字、segments=0、
+        转写文本首字符是 '{' 的现象).
         """
-        body_text = response.text or ""
+        body_text = (response.text or "").strip()
         ctype = response.headers.get("content-type", "").lower()
-        if "json" in ctype:
+        looks_json = "json" in ctype or body_text.startswith(("{", "["))
+        if looks_json:
             try:
                 data = response.json()
+            except ValueError:
+                data = None
+            if isinstance(data, dict):
                 return (
                     str(data.get("text", "")),
                     str(data.get("language", "zh")),
                     data.get("segments", []) or [],
                 )
-            except ValueError:
-                # content-type 撒谎了, 退回纯文本兜底
-                pass
         # 纯文本: 直接当 text, 没有 segments
-        return body_text.strip(), "zh", []
+        return body_text, "zh", []
