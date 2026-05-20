@@ -62,8 +62,14 @@ class FunASRWebSocketClient:
 
         try:
             loop = self._get_or_create_loop()
+            # 用 asyncio.wait_for 把整个转写流程 (连接 + 推流 + 收结果) 卡死在 self.timeout
+            # 之前只在 ws_connect 的 open_timeout 上设了 60s, 一旦连上后慢服务可能跑到外层
+            # future 的 630s 才被砍, 现在内层主动收口, 错误归因更准确
             result = loop.run_until_complete(
-                self._transcribe_async(audio_path, hotwords)
+                asyncio.wait_for(
+                    self._transcribe_async(audio_path, hotwords),
+                    timeout=self.timeout,
+                )
             )
             elapsed = time.monotonic() - t0
             logger.info(

@@ -2,6 +2,8 @@
 """视频标注器: 将姿态估计、关键点、动作识别、语音识别结果叠加到原始视频上，生成标注视频。"""
 
 import bisect
+import shutil
+import subprocess
 from pathlib import Path
 
 import cv2
@@ -118,12 +120,16 @@ class VideoAnnotator:
 
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
+        # opencv-python-headless 自带的 ffmpeg 没有 libx264, 无法直接写 avc1/H.264.
+        # 这里先用 mp4v (MPEG-4 Part 2, opencv 自带 ffmpeg 一定能写) 出临时文件,
+        # 末尾再用系统 ffmpeg (Ubuntu 全量包带 libx264) 转码为标准 H.264, 浏览器更友好.
+        tmp_writer_path = str(Path(output_path).with_suffix(".tmp_mp4v.mp4"))
         video_writer_fourcc = getattr(cv2, "VideoWriter_fourcc")
-        fourcc = video_writer_fourcc(*"avc1")
-        writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        fourcc = video_writer_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(tmp_writer_path, fourcc, fps, (width, height))
         if not writer.isOpened():
             cap.release()
-            raise RuntimeError(f"无法创建输出视频: {output_path}")
+            raise RuntimeError(f"无法创建输出视频: {tmp_writer_path}")
 
         fr_timestamps = [fr["timestamp"] for fr in frame_results]
         action_timestamps = [ev["time"] for ev in action_events]
@@ -166,9 +172,73 @@ class VideoAnnotator:
         cap.release()
         writer.release()
 
+        # 把 mp4v 临时文件转码为 H.264 mp4. 失败时退回 mp4v 文件本身, 不让整段渲染白做.
+        self._transcode_to_h264(tmp_writer_path, output_path)
+
         abs_path = str(Path(output_path).resolve())
         logger.info(f"标注视频生成完成: {abs_path} ({frame_idx}帧)")
         return abs_path
+
+    @staticmethod
+    def _transcode_to_h264(src: str, dst: str) -> None:
+        """用系统 ffmpeg 把 mp4v 临时文件转码为 H.264.
+
+        - 系统 ffmpeg 缺失或转码失败: 直接把 mp4v 文件改名到 dst 兜底
+          (mp4v 也是合法 mp4, 大多数播放器都能播, 只是浏览器/移动端兼容差点);
+        - 转码成功: 移除临时文件, dst 即标准 H.264 + faststart, web 播放友好.
+        """
+        src_path = Path(src)
+        dst_path = Path(dst)
+        if not src_path.exists():
+            logger.error(f"[VideoAnnotator] 临时视频不存在, 无法转码: {src}")
+            return
+
+        if shutil.which("ffmpeg") is None:
+            logger.warning(
+                "[VideoAnnotator] 系统 ffmpeg 不可用, 跳过 H.264 转码, "
+                "直接用 mp4v 文件作为最终输出"
+            )
+            shutil.move(str(src_path), str(dst_path))
+            return
+
+        # -pix_fmt yuv420p: 浏览器/移动端解码必需, opencv 默认 yuv444p 大多数 web 播放器播不了
+        # -movflags +faststart: moov atom 前移, 边下边播
+        # -preset fast / -crf 23: 速度与压缩比折中, 输出大小约为原始 mp4v 的 30-50%
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-i", str(src_path),
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            "-c:a", "copy",  # 原视频本就无音轨, copy 也安全
+            str(dst_path),
+        ]
+        logger.info(f"[VideoAnnotator] 开始 H.264 转码: {src} -> {dst}")
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=1200
+            )
+        except subprocess.TimeoutExpired:
+            logger.error(
+                f"[VideoAnnotator] H.264 转码超时 (>1200s), 退回 mp4v 兜底"
+            )
+            shutil.move(str(src_path), str(dst_path))
+            return
+
+        if result.returncode != 0:
+            logger.error(
+                f"[VideoAnnotator] H.264 转码失败 (rc={result.returncode}), "
+                f"退回 mp4v 兜底: {result.stderr[:500]}"
+            )
+            shutil.move(str(src_path), str(dst_path))
+            return
+
+        # 转码成功后清理临时文件
+        try:
+            src_path.unlink()
+        except OSError as exc:
+            logger.warning(f"[VideoAnnotator] 临时文件清理失败: {exc}")
+        logger.info(f"[VideoAnnotator] H.264 转码完成: {dst}")
 
     def _find_nearest_detections(
         self, timestamp: float, fr_timestamps: list[float], frame_results: list[dict]

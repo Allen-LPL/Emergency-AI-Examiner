@@ -37,25 +37,22 @@ class WhisperHTTPClient:
                 with open(audio_path, "rb") as audio_file:
                     response = client.post(
                         self.url,
-                        params={"language": "zh"},
+                        # output=json: whisper-asr-webservice 默认返回纯文本,
+                        # 显式要 JSON 才有 text/language/segments 字段
+                        params={"language": "zh", "output": "json"},
                         files={"audio_file": audio_file},
                     )
             response.raise_for_status()
-            data = response.json()
-            text = str(data.get("text", ""))
+            text, language, segments = self._parse_response(response)
             elapsed = time.monotonic() - t0
             logger.info(
                 f"[WhisperHTTPClient] 转写成功: {len(text)}字, "
-                f"耗时={elapsed:.1f}s, language={data.get('language', 'zh')}, "
-                f"segments={len(data.get('segments', []))}"
+                f"耗时={elapsed:.1f}s, language={language}, "
+                f"segments={len(segments)}"
             )
             # 把完整转写文本落到日志, 便于人工复盘 ASR 质量 (用户明确要求)
             logger.info(f"[WhisperHTTPClient] 转写文本: {text}")
-            return {
-                "text": text,
-                "language": str(data.get("language", "zh")),
-                "segments": data.get("segments", []),
-            }
+            return {"text": text, "language": language, "segments": segments}
         except httpx.TimeoutException as exc:
             elapsed = time.monotonic() - t0
             logger.error(
@@ -79,3 +76,27 @@ class WhisperHTTPClient:
                 f"[WhisperHTTPClient] 转写异常 ({type(exc).__name__}): {exc}"
             )
         return {"text": "", "segments": []}
+
+    @staticmethod
+    def _parse_response(response: httpx.Response) -> tuple[str, str, list]:
+        """兼容 JSON 与纯文本两种响应。
+
+        whisper-asr-webservice 在 output=json 时返回 JSON;
+        某些 fork / 旧版本即使带了 output=json 仍可能返回纯文本,
+        这里两种都吃掉, 不再因为 JSONDecodeError 整路丢空.
+        """
+        body_text = response.text or ""
+        ctype = response.headers.get("content-type", "").lower()
+        if "json" in ctype:
+            try:
+                data = response.json()
+                return (
+                    str(data.get("text", "")),
+                    str(data.get("language", "zh")),
+                    data.get("segments", []) or [],
+                )
+            except ValueError:
+                # content-type 撒谎了, 退回纯文本兜底
+                pass
+        # 纯文本: 直接当 text, 没有 segments
+        return body_text.strip(), "zh", []

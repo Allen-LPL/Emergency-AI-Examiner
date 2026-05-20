@@ -263,7 +263,10 @@ class AudioPipeline:
                     f"{len(funasr_result.get('segments', []))}段"
                 )
             except Exception as exc:
-                logger.warning(f"[AudioPipeline] FunASR WS 失败: {exc}")
+                # 显式带异常类型, 否则 TimeoutError 的 str 是空字符串看不出原因
+                logger.warning(
+                    f"[AudioPipeline] FunASR WS 失败 ({type(exc).__name__}): {exc}"
+                )
 
         if whisper_future is not None:
             try:
@@ -273,7 +276,10 @@ class AudioPipeline:
                     f"{len(whisper_result.get('text', ''))}字"
                 )
             except Exception as exc:
-                logger.warning(f"[AudioPipeline] Whisper HTTP 失败: {exc}")
+                logger.warning(
+                    f"[AudioPipeline] Whisper HTTP 失败 "
+                    f"({type(exc).__name__}): {exc}"
+                )
 
         if tencent_future is not None:
             try:
@@ -286,7 +292,10 @@ class AudioPipeline:
                     f"{len(tencent_result.get('segments', []))}段"
                 )
             except Exception as exc:
-                logger.warning(f"[AudioPipeline] Tencent ASR 失败: {exc}")
+                logger.warning(
+                    f"[AudioPipeline] Tencent ASR 失败 "
+                    f"({type(exc).__name__}): {exc}"
+                )
 
         if executor is not None:
             executor.shutdown(wait=False)
