@@ -57,19 +57,34 @@ class AIEngineConfig(BaseSettings):
         default="ws://172.17.0.1:10095",
         description="FunASR WebSocket server URL (offline mode)",
     )
+    # 超时从 120 提到 600 秒, 适配 5+ 分钟考核音频
     funasr_ws_timeout: int = Field(
-        default=120, description="FunASR WebSocket timeout in seconds",
+        default=600, description="FunASR WebSocket 超时秒数 (含连接 + 转写)",
     )
     whisper_http_url: str = Field(
         default="http://172.28.0.1:9000/asr",
         description="Whisper ASR HTTP API endpoint",
     )
     whisper_http_timeout: int = Field(
-        default=120, description="Whisper HTTP request timeout in seconds",
+        default=600, description="Whisper HTTP 请求超时秒数",
     )
     enable_external_asr: bool = Field(
         default=True,
-        description="Enable external ASR services (FunASR WS + Whisper HTTP)",
+        description="启用外部 ASR (FunASR WS + Whisper HTTP) 总开关",
+    )
+
+    # Tencent Cloud ASR (录音文件识别, 异步任务接口) — 与 FunASR/Whisper 解耦的第三路冗余
+    enable_tencent_asr: bool = Field(
+        default=False, description="是否启用腾讯云 ASR 第三路 (默认关闭)"
+    )
+    tencent_secret_id: str = Field(default="", description="腾讯云 SecretId")
+    tencent_secret_key: str = Field(default="", description="腾讯云 SecretKey")
+    tencent_app_id: int = Field(default=0, description="腾讯云 AppId")
+    tencent_engine_type: str = Field(
+        default="16k_zh", description="腾讯云 ASR 引擎模型, 默认 16k 中文通用"
+    )
+    tencent_asr_timeout: int = Field(
+        default=600, description="腾讯云 ASR 总超时 (含轮询任务状态)"
     )
 
     # 路径相关:

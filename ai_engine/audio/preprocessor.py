@@ -26,18 +26,28 @@ try:
 except ImportError:
     sf = None
 
-# ffmpeg 滤镜链 (顺序敏感):
-#   highpass=f=80           去除低频电源噪与桌面震动
-#   lowpass=f=8000          限制高频, 16kHz 采样下 8k 是奈奎斯特上限的实用值
-#   afftdn=nf=-20:tn=1      FFT 降噪, nf=噪声底限(dB) tn=跟踪速率(更积极)
-#   anlmdn=s=0.0001:m=15    非局部均值降噪, 对多人混声更有效
-#   loudnorm                EBU R128 响度归一 (I=-16 LUFS, TP=-1.5 dB)
+# ffmpeg 滤镜链 (顺序敏感, 针对从视频中提取的远讲人声做"放大人声 + 增加透传度"):
+#   highpass=f=100              切掉 100Hz 以下电源/桌震/低频隆隆声
+#   lowpass=f=7800              16kHz 采样下保留 7.8k 高频细节, 略低于奈奎斯特避免混叠
+#   afftdn=nf=-25:tn=1:tr=1     FFT 降噪更激进 (-25dB 噪声门限), 跟踪残留噪声
+#   anlmdn=s=0.0001:p=0.002...  非局部均值降噪, p/r 抑制颗粒感, 对多人混声更有效
+#   equalizer 250Hz +2.5dB       提升胸腔共鸣段, 让人声更饱满
+#   equalizer 2500Hz +4dB        提升清晰度峰 (语音可懂度核心带), 实质性"增加透传度"
+#   equalizer 6000Hz +2dB        提升齿音/气音, 防止后续降噪后人声发糊
+#   deesser=i=0.4                抑制 7-8kHz 过亮齿音, 避免 EQ 提升后刺耳
+#   acompressor 阈值 -22dB        动态压缩拉近远讲与近讲, "放大人声"的安全手段 (不削峰)
+#   loudnorm I=-14:TP=-1.0       EBU R128 整体响度归一, 比 -16 LUFS 更接近播放设备舒适区间
 DEFAULT_FILTER_CHAIN = (
-    "highpass=f=80,"
-    "lowpass=f=8000,"
-    "afftdn=nf=-20:tn=1,"
-    "anlmdn=s=0.0001:m=15,"
-    "loudnorm=I=-16:TP=-1.5:LRA=11"
+    "highpass=f=100,"
+    "lowpass=f=7800,"
+    "afftdn=nf=-25:tn=1:tr=1,"
+    "anlmdn=s=0.0001:p=0.002:r=0.002:m=15,"
+    "equalizer=f=250:width_type=q:w=1.2:g=2.5,"
+    "equalizer=f=2500:width_type=q:w=1.4:g=4.0,"
+    "equalizer=f=6000:width_type=q:w=2.0:g=2.0,"
+    "deesser=i=0.4,"
+    "acompressor=threshold=-22dB:ratio=3:attack=10:release=120:makeup=4,"
+    "loudnorm=I=-14:TP=-1.0:LRA=9"
 )
 
 
@@ -138,11 +148,13 @@ class AudioPreprocessor:
         assert nr is not None and sf is not None
         try:
             waveform, sr = sf.read(wav_path, dtype="float32")
+            # prop_decrease 从 0.85 降到 0.75: ffmpeg 已做激进降噪 + EQ 提亮人声,
+            # 这里若再削 0.85 容易把清辅音 (s/sh/t/k) 一起带走, 影响 ASR 字准率
             denoised = nr.reduce_noise(
                 y=waveform,
                 sr=sr,
                 stationary=False,
-                prop_decrease=0.85,
+                prop_decrease=0.75,
                 n_fft=512,
                 time_constant_s=2.0,
                 freq_mask_smooth_hz=500,

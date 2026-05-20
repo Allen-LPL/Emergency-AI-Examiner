@@ -68,10 +68,17 @@ class AudioPipeline:
         manual_speaker_role_map: Optional[dict[str, str]] = None,
         vad_model: str = "fsmn-vad",
         funasr_ws_url: str = "ws://172.17.0.1:10095",
-        funasr_ws_timeout: int = 120,
+        funasr_ws_timeout: int = 600,
         whisper_http_url: str = "http://172.28.0.1:9000/asr",
-        whisper_http_timeout: int = 120,
+        whisper_http_timeout: int = 600,
         enable_external_asr: bool = True,
+        # 第三路: 腾讯云录音文件识别 (默认关闭, 凭证齐全才生效)
+        enable_tencent_asr: bool = False,
+        tencent_secret_id: str = "",
+        tencent_secret_key: str = "",
+        tencent_app_id: int = 0,
+        tencent_engine_type: str = "16k_zh",
+        tencent_asr_timeout: int = 600,
     ) -> None:
         self.sample_rate = sample_rate
         self.manual_speaker_role_map = manual_speaker_role_map
@@ -95,6 +102,34 @@ class AudioPipeline:
         self.whisper_http = WhisperHTTPClient(
             url=whisper_http_url, timeout=whisper_http_timeout,
         )
+
+        # 腾讯 ASR 凭证齐全才启用, 否则 enable 标记为 False, 调度时直接跳过
+        self.enable_tencent_asr = (
+            enable_tencent_asr
+            and bool(tencent_secret_id)
+            and bool(tencent_secret_key)
+            and tencent_app_id > 0
+        )
+        self.tencent_asr_timeout = tencent_asr_timeout
+        self.tencent_asr = None
+        if self.enable_tencent_asr:
+            from ai_engine.audio.tencent_asr_client import TencentASRClient
+            self.tencent_asr = TencentASRClient(
+                secret_id=tencent_secret_id,
+                secret_key=tencent_secret_key,
+                app_id=tencent_app_id,
+                engine_type=tencent_engine_type,
+                timeout=tencent_asr_timeout,
+            )
+            logger.info(
+                f"[AudioPipeline] 腾讯 ASR 已启用: engine={tencent_engine_type}, "
+                f"app_id={tencent_app_id}"
+            )
+        elif enable_tencent_asr:
+            logger.warning(
+                "[AudioPipeline] 腾讯 ASR 开关已开, 但凭证不完整, 跳过该路"
+            )
+
         self.asr_merger = ASRMerger()
 
         self.role_binder = SpeakerRoleBinder()
@@ -177,20 +212,35 @@ class AudioPipeline:
             f"(来自 {len(vad_segments)} VAD segments)"
         )
 
-        # ------ 阶段 5: 三路并行 ASR ------
+        # ------ 阶段 5: 多路并行 ASR (本地 Paraformer + FunASR WS + Whisper + 腾讯) ------
         funasr_ws_future: Future | None = None
         whisper_future: Future | None = None
+        tencent_future: Future | None = None
         executor: ThreadPoolExecutor | None = None
 
+        # 计算所需线程数: 外部 ASR 2 路 (FunASR + Whisper) + 可选腾讯 1 路
+        external_workers = 0
         if self.enable_external_asr:
-            executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ext_asr")
-            hotwords_json = get_funasr_ws_hotwords()
-            funasr_ws_future = executor.submit(
-                self.funasr_ws.transcribe, preprocessed, hotwords_json,
+            external_workers += 2
+        if self.enable_tencent_asr and self.tencent_asr is not None:
+            external_workers += 1
+
+        if external_workers > 0:
+            executor = ThreadPoolExecutor(
+                max_workers=external_workers, thread_name_prefix="ext_asr"
             )
-            whisper_future = executor.submit(
-                self.whisper_http.transcribe, preprocessed,
-            )
+            if self.enable_external_asr:
+                hotwords_json = get_funasr_ws_hotwords()
+                funasr_ws_future = executor.submit(
+                    self.funasr_ws.transcribe, preprocessed, hotwords_json,
+                )
+                whisper_future = executor.submit(
+                    self.whisper_http.transcribe, preprocessed,
+                )
+            if self.enable_tencent_asr and self.tencent_asr is not None:
+                tencent_future = executor.submit(
+                    self.tencent_asr.transcribe, preprocessed,
+                )
 
         speech_segments = self.asr.transcribe_segments(
             audio_path=preprocessed,
@@ -201,10 +251,12 @@ class AudioPipeline:
 
         funasr_result: dict[str, Any] = {"text": "", "segments": []}
         whisper_result: dict[str, Any] = {"text": "", "segments": []}
+        tencent_result: dict[str, Any] = {"text": "", "segments": []}
 
         if funasr_ws_future is not None:
             try:
-                funasr_result = funasr_ws_future.result(timeout=150)
+                # future.result 超时 = FunASR 自身 timeout + 30s 缓冲, 避免提前抢断
+                funasr_result = funasr_ws_future.result(timeout=630)
                 logger.info(
                     f"[AudioPipeline] FunASR WS: "
                     f"{len(funasr_result.get('text', ''))}字, "
@@ -215,7 +267,7 @@ class AudioPipeline:
 
         if whisper_future is not None:
             try:
-                whisper_result = whisper_future.result(timeout=150)
+                whisper_result = whisper_future.result(timeout=630)
                 logger.info(
                     f"[AudioPipeline] Whisper HTTP: "
                     f"{len(whisper_result.get('text', ''))}字"
@@ -223,17 +275,30 @@ class AudioPipeline:
             except Exception as exc:
                 logger.warning(f"[AudioPipeline] Whisper HTTP 失败: {exc}")
 
+        if tencent_future is not None:
+            try:
+                tencent_result = tencent_future.result(
+                    timeout=self.tencent_asr_timeout + 30
+                )
+                logger.info(
+                    f"[AudioPipeline] Tencent ASR: "
+                    f"{len(tencent_result.get('text', ''))}字, "
+                    f"{len(tencent_result.get('segments', []))}段"
+                )
+            except Exception as exc:
+                logger.warning(f"[AudioPipeline] Tencent ASR 失败: {exc}")
+
         if executor is not None:
             executor.shutdown(wait=False)
 
-        # ------ 阶段 5.5: 三路 ASR 结果合并 ------
+        # ------ 阶段 5.5: 多路 ASR 结果合并 ------
         paraformer_seg_dicts = [
             {"start": s.start, "end": s.end, "raw_text": s.raw_text, "text": s.raw_text,
              "speaker": s.speaker}
             for s in speech_segments
         ]
         merged_seg_dicts = self.asr_merger.merge(
-            paraformer_seg_dicts, funasr_result, whisper_result,
+            paraformer_seg_dicts, funasr_result, whisper_result, tencent_result,
         )
         merged_text_map: dict[int, str] = {}
         for i, md in enumerate(merged_seg_dicts):
@@ -285,6 +350,7 @@ class AudioPipeline:
             "external_asr": {
                 "funasr_text": funasr_result.get("text", ""),
                 "whisper_text": whisper_result.get("text", ""),
+                "tencent_text": tencent_result.get("text", ""),
             },
             "stats": {
                 "audio_duration": round(duration, 1),
@@ -359,7 +425,7 @@ class AudioPipeline:
             "events": [],
             "speaker_role_map": {},
             "hotwords": get_hotword_list(),
-            "external_asr": {"funasr_text": "", "whisper_text": ""},
+            "external_asr": {"funasr_text": "", "whisper_text": "", "tencent_text": ""},
             "stats": {
                 "audio_duration": 0.0,
                 "vad_segments": 0,

@@ -1,10 +1,18 @@
 # pyright: reportMissingImports=false
-"""FunASR WebSocket ASR client (offline mode)."""
+"""FunASR WebSocket ASR 客户端 (offline 模式).
+
+设计要点:
+    1. 失败原因分桶 (连接被拒 / 连接超时 / 协议异常 / 其他), 每一类都打印
+       足够定位的现场信息, 避免历史上 `except Exception` 静默丢错;
+    2. 成功后把完整转写文本落到 INFO 日志, 便于人工复盘 ASR 质量;
+    3. 默认超时 600s, 适配 5+ 分钟考核音频; 连接超时 60s.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +37,7 @@ class FunASRWebSocketClient:
     def __init__(
         self,
         url: str = "ws://172.17.0.1:10095",
-        timeout: int = 120,
+        timeout: int = 600,
     ):
         self.url = url
         self.timeout = timeout
@@ -45,9 +53,11 @@ class FunASRWebSocketClient:
             logger.error(f"[FunASRWebSocketClient] 文件不存在: {audio_path}")
             return self._empty_result()
 
+        t0 = time.monotonic()
         logger.info(
-            f"[FunASRWebSocketClient] 开始转写: {audio_path}, "
-            f"server={self.url}, hotwords={len(hotwords)}字符"
+            f"[FunASRWebSocketClient] 开始转写: file={audio_path}, "
+            f"server={self.url}, timeout={self.timeout}s, "
+            f"hotwords={len(hotwords)}字符"
         )
 
         try:
@@ -55,10 +65,39 @@ class FunASRWebSocketClient:
             result = loop.run_until_complete(
                 self._transcribe_async(audio_path, hotwords)
             )
+            elapsed = time.monotonic() - t0
+            logger.info(
+                f"[FunASRWebSocketClient] 转写完成: "
+                f"{len(result.get('text', ''))}字, "
+                f"{len(result.get('segments', []))}段, 耗时={elapsed:.1f}s"
+            )
+            # 完整文本落日志便于复盘 ASR 质量 (用户明确要求)
+            logger.info(
+                f"[FunASRWebSocketClient] 转写文本: {result.get('text', '')}"
+            )
             return result
+        except ConnectionRefusedError as exc:
+            logger.error(
+                f"[FunASRWebSocketClient] 连接被拒: server={self.url}, "
+                f"请检查 FunASR 服务是否启动. exc={exc}"
+            )
+        except asyncio.TimeoutError as exc:
+            elapsed = time.monotonic() - t0
+            logger.error(
+                f"[FunASRWebSocketClient] 连接/转写超时 ({self.timeout}s): "
+                f"server={self.url}, 已耗时={elapsed:.1f}s, exc={exc}"
+            )
+        except OSError as exc:
+            logger.error(
+                f"[FunASRWebSocketClient] 网络错误 ({type(exc).__name__}): "
+                f"server={self.url}, exc={exc}"
+            )
         except Exception as exc:
-            logger.error(f"[FunASRWebSocketClient] 转写失败: {exc}")
-            return self._empty_result()
+            # websockets.exceptions.* 各类协议异常都走这里
+            logger.exception(
+                f"[FunASRWebSocketClient] 转写异常 ({type(exc).__name__}): {exc}"
+            )
+        return self._empty_result()
 
     async def _transcribe_async(
         self, audio_path: str, hotwords: str
@@ -73,7 +112,7 @@ class FunASRWebSocketClient:
         async with ws_connect(
             self.url,
             max_size=None,
-            open_timeout=30,
+            open_timeout=60,
             close_timeout=10,
             ping_interval=None,
         ) as ws:
@@ -114,13 +153,13 @@ class FunASRWebSocketClient:
                         stamp_sents = data.get("stamp_sents", [])
                         if stamp_sents:
                             all_segments = self._parse_stamp_sents(stamp_sents)
-            except Exception:
-                pass
+            except Exception as exc:
+                # 消息循环出错时, 已收到的结果不丢, 只 warn 一下供排查
+                logger.warning(
+                    f"[FunASRWebSocketClient] 消息循环异常 "
+                    f"({type(exc).__name__}), 已收 {len(final_text)}字: {exc}"
+                )
 
-        logger.info(
-            f"[FunASRWebSocketClient] 转写完成: "
-            f"{len(final_text)}字, {len(all_segments)}段"
-        )
         return {"text": final_text, "segments": all_segments}
 
     def _parse_stamp_sents(

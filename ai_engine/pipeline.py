@@ -317,6 +317,13 @@ class ExaminationPipeline:
                 whisper_http_url=self.config.whisper_http_url,
                 whisper_http_timeout=self.config.whisper_http_timeout,
                 enable_external_asr=self.config.enable_external_asr,
+                # 第三路腾讯 ASR (默认关闭, 由 AI_ENABLE_TENCENT_ASR + 凭证三件套控制)
+                enable_tencent_asr=self.config.enable_tencent_asr,
+                tencent_secret_id=self.config.tencent_secret_id,
+                tencent_secret_key=self.config.tencent_secret_key,
+                tencent_app_id=self.config.tencent_app_id,
+                tencent_engine_type=self.config.tencent_engine_type,
+                tencent_asr_timeout=self.config.tencent_asr_timeout,
             )
             audio_result = pipeline.process(audio_path)
         except Exception as exc:

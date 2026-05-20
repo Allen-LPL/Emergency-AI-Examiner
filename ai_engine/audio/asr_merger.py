@@ -35,17 +35,22 @@ class ASRMerger:
         paraformer_segments: list[dict[str, Any]],
         funasr_result: dict[str, Any],
         whisper_result: dict[str, Any],
+        tencent_result: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         funasr_text = funasr_result.get("text", "") or ""
         funasr_segments = funasr_result.get("segments", []) or []
         whisper_text = whisper_result.get("text", "") or ""
+        tencent_text = (tencent_result or {}).get("text", "") or ""
+        tencent_segments = (tencent_result or {}).get("segments", []) or []
 
         funasr_text_clean = self._clean_hallucinations(funasr_text)
         whisper_text_clean = self._clean_hallucinations(whisper_text)
+        tencent_text_clean = self._clean_hallucinations(tencent_text)
 
         logger.info(
             f"[ASRMerger] 输入: paraformer={len(paraformer_segments)}段, "
-            f"funasr={len(funasr_text)}字, whisper={len(whisper_text)}字"
+            f"funasr={len(funasr_text)}字, whisper={len(whisper_text)}字, "
+            f"tencent={len(tencent_text)}字"
         )
 
         merged: list[dict[str, Any]] = []
@@ -68,20 +73,39 @@ class ASRMerger:
             whisper_match = self._find_best_match_in_fulltext(
                 cleaned, whisper_text_clean
             )
+            tencent_match = self._find_best_match_in_fulltext(
+                cleaned, tencent_text_clean
+            ) if tencent_text_clean else 0.0
 
+            # 优先看 FunASR 的时间对齐分段, 没有再退回 Tencent 的时间对齐分段
             funasr_seg_match = self._find_time_aligned_segment(
                 seg.get("start", 0), seg.get("end", 0), funasr_segments
             )
+            if not funasr_seg_match and tencent_segments:
+                funasr_seg_match = self._find_time_aligned_segment(
+                    seg.get("start", 0), seg.get("end", 0), tencent_segments
+                )
 
             best_text = cleaned
             source = "paraformer"
             boost = 0.0
 
-            if funasr_match > 0.8 and whisper_match > 0.8:
+            # 三路投票: 命中数 >= 2 高置信; 命中 1 路低置信; 全 miss 走纠错
+            high_hits = sum(
+                1 for m in (funasr_match, whisper_match, tencent_match) if m > 0.8
+            )
+            mid_hits = sum(
+                1 for m in (funasr_match, whisper_match, tencent_match) if m > 0.6
+            )
+            all_miss = (
+                funasr_match < 0.3 and whisper_match < 0.3 and tencent_match < 0.3
+            )
+
+            if high_hits >= 2:
                 boost = 0.3
-            elif funasr_match > 0.6 or whisper_match > 0.6:
+            elif mid_hits >= 1:
                 boost = 0.1
-            elif funasr_match < 0.3 and whisper_match < 0.3 and len(cleaned) > 4:
+            elif all_miss and len(cleaned) > 4:
                 candidate = self._pick_best_alternative(
                     cleaned, funasr_seg_match, whisper_text_clean,
                     seg.get("start", 0), seg.get("end", 0),
