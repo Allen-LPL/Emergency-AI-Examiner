@@ -86,6 +86,14 @@ class AIEngineConfig(BaseSettings):
     tencent_asr_timeout: int = Field(
         default=600, description="腾讯云 ASR 总超时 (含轮询任务状态)"
     )
+    tencent_hotword_id: str = Field(
+        default="",
+        description=(
+            "腾讯云 ASR 热词表 ID (形如 hw-xxxxx). "
+            "需要先在腾讯云控制台-语音识别-自学习模型-热词管理建好热词表后填入. "
+            "留空则不启用热词 (向后兼容)"
+        ),
+    )
 
     # 路径相关:
     #   upload_dir / output_dir 默认相对路径, 由调用方在使用前通过 Path(...).resolve()

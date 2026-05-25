@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ssl
 import time
 from pathlib import Path
 from typing import Any
@@ -115,12 +116,25 @@ class FunASRWebSocketClient:
         waveform, sr = sf.read(audio_path, dtype="int16")
         pcm_bytes = waveform.tobytes()
 
+        # FunASR runtime SDK 0.4.x 默认 wss + 自签证书,
+        # 直接用 ws:// 握手必失败 (历史上一直 TimeoutError, 这是根因).
+        # 自动把 ws:// 升级到 wss:// + 跳过证书校验; 内网部署安全风险可接受.
+        url = self.url
+        ssl_context: ssl.SSLContext | None = None
+        if url.startswith("ws://"):
+            url = "wss://" + url[len("ws://"):]
+        if url.startswith("wss://"):
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+
         async with ws_connect(
-            self.url,
+            url,
             max_size=None,
             open_timeout=60,
             close_timeout=10,
             ping_interval=None,
+            ssl=ssl_context,
         ) as ws:
             config_msg = json.dumps(
                 {

@@ -14,11 +14,19 @@
     FilterModal=0               不过滤语气词
     FilterPunc=0                不过滤句末标点
     ConvertNumMode=1            智能转换阿拉伯数字
+    HotwordId (可选)            热词表 ID, 显著提升专业术语命中率
 
 返回结构与 FunASRWebSocketClient 一致, 便于 ASRMerger 复用:
     {"text": str, "segments": [{"start": float, "end": float, "text": str}]}
 
 凭证未配齐时静默返回空结果, 不抛异常, 不影响主链路.
+
+如何启用热词 (推荐):
+    1. 登录腾讯云控制台 -> 语音识别 -> 自学习模型 -> 热词管理, 新建热词表;
+    2. 把急救/医疗术语 (心肺复苏、除颤、肾上腺素、球囊通气...) 录入, 每行 "词 权重",
+       权重 1-100, 配合 hotwords.py 里 HOTWORDS_* 的 weight 即可;
+    3. 创建后拿到 HotwordId (形如 "hw-12345"), 填入 .env 的 AI_TENCENT_HOTWORD_ID;
+    4. 重启 worker 容器即生效, 留空则不传该字段 (向后兼容).
 """
 
 from __future__ import annotations
@@ -67,6 +75,7 @@ class TencentASRClient:
         engine_type: str = "16k_zh",
         timeout: int = 600,
         poll_interval: float = 3.0,
+        hotword_id: str = "",
     ):
         self.secret_id = secret_id
         self.secret_key = secret_key
@@ -74,6 +83,7 @@ class TencentASRClient:
         self.engine_type = engine_type
         self.timeout = timeout
         self.poll_interval = poll_interval
+        self.hotword_id = hotword_id
 
     def transcribe(self, audio_path: str) -> dict[str, Any]:
         # 凭证缺失静默跳过, 不影响主链路
@@ -98,7 +108,8 @@ class TencentASRClient:
         t0 = time.monotonic()
         logger.info(
             f"[TencentASRClient] 开始转写: file={audio_path}, "
-            f"engine={self.engine_type}, timeout={self.timeout}s"
+            f"engine={self.engine_type}, timeout={self.timeout}s, "
+            f"hotword_id={self.hotword_id or '<未配置>'}"
         )
 
         try:
@@ -179,7 +190,7 @@ class TencentASRClient:
     def _create_task(self, client: Any, data_b64: str, data_len: int) -> int:
         assert models is not None
         req = models.CreateRecTaskRequest()
-        params = {
+        params: dict[str, Any] = {
             "EngineModelType": self.engine_type,
             "ChannelNum": 1,
             "ResTextFormat": 2,    # 带词级时间戳的 JSON 格式
@@ -191,6 +202,9 @@ class TencentASRClient:
             "FilterPunc": 0,
             "ConvertNumMode": 1,
         }
+        # hotword_id 留空时不传 HotwordId 字段, 等同改造前; 非空时启用热词
+        if self.hotword_id:
+            params["HotwordId"] = self.hotword_id
         req.from_json_string(json.dumps(params))
         resp = client.CreateRecTask(req)
         # resp.Data.TaskId

@@ -144,7 +144,10 @@ services:
     ports:
       - "9000:9000"
     environment:
-      - ASR_MODEL=medium  # 可选: tiny, base, small, medium, large
+      # large-v3 中文识别字准率显著高于 medium, 是消除大量幻听 (1001 1002...) 的关键.
+      # 显存占用 ~10GB (medium 约 5GB), 需要确认 GPU 余量; 如不够可换 ASR_ENGINE=faster_whisper + int8 量化降到 ~3-4GB.
+      - ASR_MODEL=large-v3  # 可选: tiny, base, small, medium, large, large-v2, large-v3
+      - ASR_ENGINE=faster_whisper  # faster-whisper 比 openai-whisper 快 4x, 显存效率更高
       - ASR_LANGUAGE=zh  # 可选: 指定默认语言
     volumes:
       - /data/sdb/whisper/whisper_models:/root/.cache/whisper

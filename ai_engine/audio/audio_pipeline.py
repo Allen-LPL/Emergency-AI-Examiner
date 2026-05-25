@@ -79,6 +79,7 @@ class AudioPipeline:
         tencent_app_id: int = 0,
         tencent_engine_type: str = "16k_zh",
         tencent_asr_timeout: int = 600,
+        tencent_hotword_id: str = "",
     ) -> None:
         self.sample_rate = sample_rate
         self.manual_speaker_role_map = manual_speaker_role_map
@@ -120,10 +121,12 @@ class AudioPipeline:
                 app_id=tencent_app_id,
                 engine_type=tencent_engine_type,
                 timeout=tencent_asr_timeout,
+                hotword_id=tencent_hotword_id,
             )
             logger.info(
                 f"[AudioPipeline] 腾讯 ASR 已启用: engine={tencent_engine_type}, "
-                f"app_id={tencent_app_id}"
+                f"app_id={tencent_app_id}, "
+                f"hotword_id={tencent_hotword_id or '<未配置>'}"
             )
         elif enable_tencent_asr:
             logger.warning(

@@ -372,6 +372,43 @@ def get_high_priority_words(min_weight: int = 100) -> list[str]:
     return [w for w, v in get_hotword_dict().items() if v >= min_weight]
 
 
+def get_whisper_initial_prompt() -> str:
+    """生成 Whisper initial_prompt: 领域描述 + 高权重热词样本.
+
+    背景: Whisper 在中文医疗领域裸跑会大量幻听 (纯数字串/倒计时/重复短语).
+    initial_prompt 给模型注入领域上下文, 可显著压低幻听并提高术语命中.
+
+    限制: Whisper 把 initial_prompt 转成 token, 上限 224 token,
+    超出会截断且损失末尾内容. 中文 1 字约 ~1.5 token, 所以总长控制在 130 字内,
+    只挑权重 >= 10 的高优先级热词, 再做截断兜底.
+    """
+    hotword_dict = get_hotword_dict()
+    # 权重 >=10 的热词按权重降序拍平, 优先保住核心动作/术语
+    high_words = sorted(
+        [(w, v) for w, v in hotword_dict.items() if v >= 10],
+        key=lambda x: -x[1],
+    )
+    candidate = [w for w, _ in high_words]
+
+    description = (
+        "以下是中国心肺复苏与急救考核现场的对话录音, "
+        "涉及胸外按压、人工通气、除颤、肾上腺素给药、气道开放、"
+        "判断意识、判断呼吸、判断脉搏等操作. 常用术语: "
+    )
+    # 130 字上限, 减去描述和句末标点
+    budget = 130 - len(description) - 1
+    selected: list[str] = []
+    used = 0
+    for word in candidate:
+        # +1 是分隔符 "、" 的开销
+        cost = len(word) + 1
+        if used + cost > budget:
+            break
+        selected.append(word)
+        used += cost
+    return description + "、".join(selected) + "."
+
+
 # ------------------------------------------------------------------ #
 # 供 domain_corrector 兼容使用
 # ------------------------------------------------------------------ #
@@ -392,6 +429,7 @@ __all__ = [
     "get_paraformer_hotword_prompt",
     "get_hotword_set",
     "get_high_priority_words",
+    "get_whisper_initial_prompt",
     "get_hotwords",
     "get_hotword_prompt",
 ]

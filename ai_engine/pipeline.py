@@ -324,6 +324,7 @@ class ExaminationPipeline:
                 tencent_app_id=self.config.tencent_app_id,
                 tencent_engine_type=self.config.tencent_engine_type,
                 tencent_asr_timeout=self.config.tencent_asr_timeout,
+                tencent_hotword_id=self.config.tencent_hotword_id,
             )
             audio_result = pipeline.process(audio_path)
         except Exception as exc:

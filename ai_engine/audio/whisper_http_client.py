@@ -15,6 +15,8 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from ai_engine.audio.hotwords import get_whisper_initial_prompt
+
 __all__ = ["WhisperHTTPClient"]
 
 
@@ -25,9 +27,13 @@ class WhisperHTTPClient:
 
     def transcribe(self, audio_path: str) -> dict[str, Any]:
         t0 = time.monotonic()
+        # 注入医疗/急救领域上下文 + 高权重热词, 压低 Whisper 在中文医疗场景的幻听.
+        # 此前 Whisper 裸跑大量幻听 (1001 1002 1003.../5 4 3 2 1) 就是因为没有 initial_prompt.
+        initial_prompt = get_whisper_initial_prompt()
         logger.info(
             f"[WhisperHTTPClient] 开始转写: file={audio_path}, "
-            f"url={self.url}, timeout={self.timeout}s"
+            f"url={self.url}, timeout={self.timeout}s, "
+            f"prompt_len={len(initial_prompt)}字"
         )
         try:
             # connect=15s 用于快速感知服务不可达; 总超时 self.timeout 覆盖长音频上传+推理
@@ -39,7 +45,12 @@ class WhisperHTTPClient:
                         self.url,
                         # output=json: whisper-asr-webservice 默认返回纯文本,
                         # 显式要 JSON 才有 text/language/segments 字段
-                        params={"language": "zh", "output": "json"},
+                        # initial_prompt: Whisper 标准参数, 引导模型领域上下文
+                        params={
+                            "language": "zh",
+                            "output": "json",
+                            "initial_prompt": initial_prompt,
+                        },
                         files={"audio_file": audio_file},
                     )
             response.raise_for_status()

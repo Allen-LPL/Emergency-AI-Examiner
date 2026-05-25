@@ -21,9 +21,16 @@ from ai_engine.audio.hotwords import get_hotword_set
 
 _REPEAT_CHAR_RE = re.compile(r"(.)\1{2,}")
 _REPEAT_WORD_RE = re.compile(r"([\u4e00-\u9fff]{1,2}?)\1{2,}")
+# \u8fde\u7eed 3+ \u4e2a\u7531\u7a7a\u683c/\u9017\u53f7\u5206\u9694\u7684 2-5 \u4f4d\u6570\u5b57 token, \u5178\u578b Whisper \u4e2d\u6587\u5e7b\u542c "1001 1002 1003 1004 1005"
+_REPEAT_NUMBER_RE = re.compile(r"(?:\b\d{2,5}[\s,\uff0c\u3001]+){2,}\d{2,5}")
+# "5 4 3 2 1" \u6216 "1 2 3 4 5" \u5012\u8ba1\u65f6 / \u987a\u6570, \u81f3\u5c11 4 \u4e2a\u8fde\u7eed 1-2 \u4f4d\u6574\u6570
+_COUNTDOWN_RE = re.compile(r"(?:\b\d{1,2}[\s,\uff0c\u3001]+){3,}\d{1,2}\b")
 
 _MIN_SEGMENT_TEXT_LEN = 2
 _HALLUCINATION_RATIO_THRESHOLD = 0.5
+# \u6570\u5b57\u5b57\u7b26\u5360\u6bb5\u843d\u603b\u957f\u5ea6\u7684\u9608\u503c: \u8d85\u8fc7\u8be5\u6bd4\u4f8b\u8ba4\u4e3a\u6574\u6bb5\u662f\u6570\u5b57\u5e7b\u542c, \u5220\u6389\u6570\u5b57\u6bb5
+# (\u8003\u6838\u573a\u666f\u7684\u771f\u5b9e\u6309\u538b\u8ba1\u6570, \u6bb5\u5185\u901a\u5e38\u4f1a\u5939\u6742"\u7ee7\u7eed\u6309\u538b"\u3001"\u653e\u624b"\u7b49\u6c49\u5b57, \u5360\u6bd4\u4e0d\u4f1a\u5230 60%)
+_NUMBER_HALLUCINATION_RATIO = 0.6
 
 
 class ASRMerger:
@@ -131,8 +138,30 @@ class ASRMerger:
             return ""
         result = _REPEAT_WORD_RE.sub(r"\1", text)
         result = _REPEAT_CHAR_RE.sub(r"\1", result)
+        result = self._strip_number_hallucination(result)
         result = self._remove_noise_chars(result)
         return result.strip()
+
+    @staticmethod
+    def _strip_number_hallucination(text: str) -> str:
+        """删除 Whisper 中文模型典型的"连续数字串"和"倒计时"幻听.
+
+        策略: 先找数字段, 若它们的总字符数占全文 >= 60% (说明这段几乎全是数字,
+        是 Whisper 把静音/噪声转成了数字串), 把这些数字段整段抠掉; 否则保留
+        (考核场景按压计数 "1001 1002 1003" 夹在 "继续按压...现在停" 之间, 占比不到 60% 不会误删).
+        """
+        if not text:
+            return text
+        matches = _REPEAT_NUMBER_RE.findall(text) + _COUNTDOWN_RE.findall(text)
+        if not matches:
+            return text
+        digit_chars = sum(len(m) for m in matches)
+        if digit_chars / max(len(text), 1) < _NUMBER_HALLUCINATION_RATIO:
+            return text
+        # 数字占比过高, 整段抠掉所有数字段
+        for m in matches:
+            text = text.replace(m, "")
+        return text
 
     def _remove_noise_chars(self, text: str) -> str:
         if not text or len(text) < 3:
