@@ -133,7 +133,7 @@ services:
       - examiner
 
   whisper-api:
-    image: onerahmet/openai-whisper-asr-webservice:latest-cpu
+    image: onerahmet/openai-whisper-asr-webservice
     # 当前服务器 NVIDIA 服务异常 (nvidia-persistenced socket missing), 暂用 CPU 模式.
     # CPU 推理: large-v3 + int8 量化, 5min 音频约 3-5 分钟. 待 GPU 恢复后可改回 :latest + 加 deploy.resources.devices.
     ports:
@@ -146,6 +146,15 @@ services:
       - ASR_LANGUAGE=zh
       - ASR_QUANTIZATION=int8          # CPU 量化, 显著降内存与推理时间
       - OMP_NUM_THREADS=4               # CPU 线程数; 服务器物理核多可调大
+      # HF 在国内被墙, faster-whisper 默认从 huggingface.co/Systran 拉 large-v3 必须走 v2ray.
+      # 模型缓存 mount 到 /root/.cache/whisper, HF_HOME 指过去, 一次下载永久缓存.
+      - HF_HOME=/root/.cache/whisper
+      - HTTPS_PROXY=http://172.17.0.1:10809
+      - HTTP_PROXY=http://172.17.0.1:10809
+      - https_proxy=http://172.17.0.1:10809
+      - http_proxy=http://172.17.0.1:10809
+      - NO_PROXY=localhost,127.0.0.1
+      - no_proxy=localhost,127.0.0.1
     volumes:
       - /data/sdb/whisper/whisper_models:/root/.cache/whisper
     restart: unless-stopped
@@ -153,9 +162,9 @@ services:
       - examiner
 
   funasr:
-    # FunASR runtime SDK CPU 镜像, 默认开 wss://0.0.0.0:10095 + 自签证书 + Paraformer-large.
-    # 与原 `docker run ... --privileged --name=funasr ...` 等价, 但纳入 examiner 网络后,
-    # worker 直接走容器名 `wss://funasr:10095` 而不是 172.17.0.1 宿主网关, 更稳定.
+    # FunASR runtime SDK CPU 镜像, 默认 ENTRYPOINT 是 /bin/bash (不自启 server),
+    # 之前那个跑了 5 天的容器是手动 docker exec 进去执行 run_server.sh 起的, 容器重建会丢.
+    # 这里用 command 显式启动 run_server.sh, 让 compose 一次起来.
     image: registry.cn-hangzhou.aliyuncs.com/funasr_repo/funasr:funasr-runtime-sdk-cpu-0.4.6
     container_name: funasr
     privileged: true
@@ -164,8 +173,33 @@ services:
     volumes:
       - /data/sdb/funasr-runtime-resources/models:/workspace/models
     restart: unless-stopped
-    stdin_open: true     # 等价于 -i
-    tty: true            # 等价于 -t, 镜像 ENTRYPOINT 需要 tty 才能正常启动 server
+    # 首启需要从 modelscope.cn 拉模型. modelscope 在国内, 容器内若 DNS/路由异常仍可能失败,
+    # 这里同时提供 v2ray 代理兜底; NO_PROXY 把 modelscope 域名排除以走直连优先.
+    environment:
+      - HTTPS_PROXY=http://172.17.0.1:10809
+      - HTTP_PROXY=http://172.17.0.1:10809
+      - https_proxy=http://172.17.0.1:10809
+      - http_proxy=http://172.17.0.1:10809
+      - NO_PROXY=localhost,127.0.0.1,modelscope.cn,modelscope.com,oss-cn-hangzhou.aliyuncs.com,*.aliyuncs.com
+      - no_proxy=localhost,127.0.0.1,modelscope.cn,modelscope.com,oss-cn-hangzhou.aliyuncs.com,*.aliyuncs.com
+    # Paraformer-large + VAD + 标点 + ngram LM + 热词. 启动后立即在 0.0.0.0:10095 wss 监听.
+    # 用 tail -f 是 trick: 让 PID 1 保持前台运行, 否则 server 是 nohup 后台进程, 容器会立即退出.
+    # ssl_key 路径来自镜像内置 /workspace/FunASR/runtime/ssl_key/server.{crt,key}
+    command: >
+      bash -c "
+        cd /workspace/FunASR/runtime &&
+        nohup bash run_server.sh \
+          --download-model-dir /workspace/models \
+          --model-dir damo/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch \
+          --vad-dir damo/speech_fsmn_vad_zh-cn-16k-common-pytorch \
+          --punc-dir damo/punc_ct-transformer_cn-en-common-vocab471067-large-onnx \
+          --certfile ../../../ssl_key/server.crt \
+          --keyfile ../../../ssl_key/server.key \
+          > /workspace/funasr_server.log 2>&1 &
+        sleep 5 &&
+        echo '[funasr] server starting, tailing log...' &&
+        tail -f /workspace/funasr_server.log
+      "
     networks:
       - examiner
 
