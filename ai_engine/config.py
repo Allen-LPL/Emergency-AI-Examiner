@@ -53,17 +53,20 @@ class AIEngineConfig(BaseSettings):
     )
 
     # External ASR services
+    # FunASR/Whisper 已被纳入同一个 docker-compose 网络 (examiner), 默认走容器服务名,
+    # 不再依赖宿主网关 172.17.0.1 / 172.28.0.1 (重启会漂移, 且会受 v2ray 代理干扰).
+    # FunASR runtime SDK 0.4.x 默认是 wss + 自签证书, 客户端代码会自动跳过证书校验.
     funasr_ws_url: str = Field(
-        default="ws://172.17.0.1:10095",
-        description="FunASR WebSocket server URL (offline mode)",
+        default="wss://funasr:10095",
+        description="FunASR WebSocket server URL (offline mode), docker-compose 服务名",
     )
     # 超时从 120 提到 600 秒, 适配 5+ 分钟考核音频
     funasr_ws_timeout: int = Field(
         default=600, description="FunASR WebSocket 超时秒数 (含连接 + 转写)",
     )
     whisper_http_url: str = Field(
-        default="http://172.28.0.1:9000/asr",
-        description="Whisper ASR HTTP API endpoint",
+        default="http://whisper-api:9000/asr",
+        description="Whisper ASR HTTP API endpoint, docker-compose 服务名",
     )
     whisper_http_timeout: int = Field(
         default=600, description="Whisper HTTP 请求超时秒数",

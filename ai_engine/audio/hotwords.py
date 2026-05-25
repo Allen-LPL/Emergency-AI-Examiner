@@ -485,47 +485,33 @@ def _is_digit_hotword(word: str) -> bool:
 
 
 def get_whisper_initial_prompt() -> str:
-    """生成 Whisper initial_prompt: 领域描述 + 高权重医学术语热词.
+    """生成 Whisper initial_prompt: 自然散文风格领域描述, 防 prompt leaking.
 
-    背景: Whisper 在中文医疗领域裸跑会大量幻听 (纯数字串/倒计时/重复短语).
-    initial_prompt 给模型注入领域上下文, 可显著压低幻听并提高术语命中.
+    历史踩坑 (2026-05-25):
+        - 早期 prompt 用"顿号列表" ("常用术语: 心肺复苏、CPR、环境安全...")
+          → medium 模型遇到静音段把整段 prompt 复读了 17 次, 1571 字里 700 字都是 prompt 残影.
+        - 根因: Whisper 内部 condition_on_previous_text 会把 prompt 当成"已转写文本",
+          列表式 prompt 是低熵高重复结构, 模型在没信号区域倾向于复读这种"安全"模式.
 
-    关键过滤: 跳过数字口令类热词 (见 _is_digit_hotword), 避免反向诱导数字幻听.
-    数字识别在 FunASR/Paraformer 路用全套 308 条热词覆盖, Whisper 这一路只做术语校准.
+    防 leak 设计原则:
+        1. 用完整句子 + 自然连接词 ("配合"、"过程中"、"等等"), 让 prompt 看起来像
+           一段已经讲完的话, Whisper 不会觉得"还要继续讲完";
+        2. 不出现长串顿号枚举 (列表枚举是复读高发模式);
+        3. 句末用句号收尾, 提示模型"上一段已结束";
+        4. 短一些, 总长 < 90 字 (~135 token), 远低于 224 token 上限;
+        5. 不含数字, 避免诱导数字幻听 (与 _is_digit_hotword 过滤一致).
 
-    限制: Whisper 把 initial_prompt 转成 token, 上限 224 token,
-    中文 1 字约 ~1.5 token, 所以总长控制在 130 字内, 再做截断兜底.
+    返回示例:
+        "这是一段急救现场的中文录音, 急救医生和护士配合完成心肺复苏抢救,
+         过程中涉及胸外按压、人工通气、除颤、肾上腺素给药与气道管理等操作."
     """
-    hotword_dict = get_hotword_dict()
-    # 1. 跳过数字类 (避免诱导数字幻听)
-    # 2. 权重 >=10 (外部文件最低 15, 旧硬编码最低 7, 阈值 10 能兜住外部全集 + 硬编码核心)
-    # 3. 按权重降序, 优先保住核心动作/术语
-    high_words = sorted(
-        [
-            (w, v) for w, v in hotword_dict.items()
-            if v >= 10 and not _is_digit_hotword(w)
-        ],
-        key=lambda x: -x[1],
+    # 不再动态拼热词列表 (那是诱因), 用固定散文描述, 让 Whisper 知道领域即可.
+    # 真正的术语命中由 FunASR/Paraformer/Tencent 三路热词去覆盖, Whisper 在这套
+    # 多路架构里只承担"对照检查"角色, 不需要识别冷门术语.
+    return (
+        "这是一段急救现场的中文录音, 急救医生和护士配合完成心肺复苏抢救, "
+        "过程中涉及胸外按压、人工通气、除颤、肾上腺素给药与气道管理等操作."
     )
-    candidate = [w for w, _ in high_words]
-
-    description = (
-        "以下是中国心肺复苏与急救考核现场的对话录音, "
-        "涉及胸外按压、人工通气、除颤、肾上腺素给药、气道开放、"
-        "判断意识、判断呼吸、判断脉搏等操作. 常用术语: "
-    )
-    # 130 字上限, 减去描述和句末标点
-    budget = 130 - len(description) - 1
-    selected: list[str] = []
-    used = 0
-    for word in candidate:
-        # +1 是分隔符 "、" 的开销
-        cost = len(word) + 1
-        if used + cost > budget:
-            break
-        selected.append(word)
-        used += cost
-    return description + "、".join(selected) + "."
 
 
 # ------------------------------------------------------------------ #

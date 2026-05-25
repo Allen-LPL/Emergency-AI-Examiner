@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -18,6 +19,10 @@ from loguru import logger
 from ai_engine.audio.hotwords import get_whisper_initial_prompt
 
 __all__ = ["WhisperHTTPClient"]
+
+# 重复短语正则: 8-100 字短语连续重复 3 次以上, 压成单次.
+# 用于剥掉 Whisper 把 initial_prompt 当成"已转写文本"复读 N 次的产物.
+_REPEAT_PHRASE_RE = re.compile(r"(.{6,80}?)(?:\1){2,}")
 
 
 class WhisperHTTPClient:
@@ -55,9 +60,14 @@ class WhisperHTTPClient:
                     )
             response.raise_for_status()
             text, language, segments = self._parse_response(response)
+            raw_len = len(text)
+            # prompt-leak 防御: 即便 prompt 改成了散文, medium 模型在静音段仍可能复读;
+            # 这里做最后一道防线, 剥掉 (a) prompt 的开头/重复出现 (b) 任意 6-80 字短语连续重复 3+ 次.
+            text = self._strip_prompt_leakage(text, initial_prompt)
+            stripped_len = len(text)
             elapsed = time.monotonic() - t0
             logger.info(
-                f"[WhisperHTTPClient] 转写成功: {len(text)}字, "
+                f"[WhisperHTTPClient] 转写成功: {raw_len}字 → 剥 prompt 复读后 {stripped_len}字, "
                 f"耗时={elapsed:.1f}s, language={language}, "
                 f"segments={len(segments)}"
             )
@@ -116,3 +126,46 @@ class WhisperHTTPClient:
                 )
         # 纯文本: 直接当 text, 没有 segments
         return body_text, "zh", []
+
+    @staticmethod
+    def _strip_prompt_leakage(text: str, prompt: str) -> str:
+        """剥掉 Whisper 复读 initial_prompt 产生的伪转写片段.
+
+        策略 (按顺序应用):
+            1. 任何 6-80 字短语连续重复 3+ 次, 压成单次 (覆盖"判断脉搏等操作 ..."这种 17 次复读)
+            2. 文本开头如果与 prompt 高度相似 (前 30 字含 prompt 中 3 个以上连续字), 把
+               该相似段截到第一个明确转写句子 (出现 "收到"/"继续"/"按压"/数字 等正常转写标志).
+            3. 中间出现的 prompt 关键短语 ("急救现场"/"心肺复苏抢救"/"急救医生和护士"/"气道管理")
+               所在的句子整句删 (这些是 prompt 内独有表达, 真实转写一般不会原样说).
+
+        即使 prompt 改成了散文式, medium 模型在静音段仍有概率复读, 这里是最后兜底.
+        """
+        if not text:
+            return text
+
+        # 1. 任意 6-80 字短语连续重复 3+ 次, 保留 1 份
+        text = _REPEAT_PHRASE_RE.sub(r"\1", text)
+
+        # 2. + 3. 从 prompt 自动提取标志短语, 句级清理:
+        #    把 prompt 按中文标点 (顿号/逗号/句号等) 切片, 取长度 >=4 的"独有片段"作为 marker.
+        #    转写文本中任何句子包含 marker → 视为 prompt leak 整句删.
+        #    优势: prompt 改动后这里自动跟上, 不需要同步维护硬编码列表.
+        markers = [
+            seg.strip() for seg in re.split(r"[、,，。.!?！？\s]+", prompt or "")
+            if len(seg.strip()) >= 4
+        ]
+        # 兼容历史旧 prompt 残留 (用户跑老镜像还在吐这些)
+        markers.extend(["判断脉搏等操作", "做好个人防护", "环境安全、做好"])
+        markers = list(dict.fromkeys(markers))  # 去重保序
+
+        if not markers:
+            return text.strip()
+
+        sentences = re.split(r"([。!?！？\n])", text)
+        cleaned: list[str] = []
+        for sent in sentences:
+            if any(marker in sent for marker in markers):
+                # 该句包含 prompt 标志短语, 视为 leak, 整句删
+                continue
+            cleaned.append(sent)
+        return "".join(cleaned).strip()

@@ -24,12 +24,27 @@ try:
 except ImportError:
     sf = None
 
+# websockets 库三段兼容: 12.x 在 legacy.client, 13.x 同时存在 legacy 与新 client,
+# 14.x 删除 legacy 模块, connect 仅在 websockets.client / 顶层. 任何一个能 import 即视为可用.
+# 历史 bug: 之前只 import legacy.client, 装到 14.x 后 ImportError 让 websockets 变成 None,
+# 然后 transcribe() 前置检查直接 return 空, 整路静默挂掉.
+ws_connect = None
 try:
-    import websockets
-    from websockets.legacy.client import connect as ws_connect
+    import websockets  # type: ignore[import]
 except ImportError:
-    websockets = None
-    ws_connect = None  # type: ignore[assignment,misc]
+    websockets = None  # type: ignore[assignment]
+
+if websockets is not None:
+    try:
+        from websockets.legacy.client import connect as ws_connect  # type: ignore[import]
+    except ImportError:
+        try:
+            from websockets.client import connect as ws_connect  # type: ignore[import,no-redef]
+        except ImportError:
+            try:
+                from websockets import connect as ws_connect  # type: ignore[import,no-redef,attr-defined]
+            except ImportError:
+                ws_connect = None
 
 CHUNK_BYTES = 9600  # 0.3s at 16kHz 16bit mono
 
@@ -44,8 +59,13 @@ class FunASRWebSocketClient:
         self.timeout = timeout
 
     def transcribe(self, audio_path: str, hotwords: str = "") -> dict[str, Any]:
-        if websockets is None:
-            logger.error("[FunASRWebSocketClient] websockets 库未安装")
+        if websockets is None or ws_connect is None:
+            ver = getattr(websockets, "__version__", "<未安装>") if websockets else "<未安装>"
+            logger.error(
+                f"[FunASRWebSocketClient] websockets 库不可用 (version={ver}); "
+                "可能是 14.x 版本删除了 legacy.client 而无 fallback. "
+                "建议 pip install 'websockets>=12,<13' 锁定."
+            )
             return self._empty_result()
         if sf is None:
             logger.error("[FunASRWebSocketClient] soundfile 库未安装")

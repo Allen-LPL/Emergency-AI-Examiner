@@ -133,24 +133,39 @@ services:
       - examiner
 
   whisper-api:
-    image: onerahmet/openai-whisper-asr-webservice:latest
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    image: onerahmet/openai-whisper-asr-webservice:latest-cpu
+    # 当前服务器 NVIDIA 服务异常 (nvidia-persistenced socket missing), 暂用 CPU 模式.
+    # CPU 推理: large-v3 + int8 量化, 5min 音频约 3-5 分钟. 待 GPU 恢复后可改回 :latest + 加 deploy.resources.devices.
     ports:
       - "9000:9000"
     environment:
-      # large-v3 中文识别字准率显著高于 medium, 是消除大量幻听 (1001 1002...) 的关键.
-      # 显存占用 ~10GB (medium 约 5GB), 需要确认 GPU 余量; 如不够可换 ASR_ENGINE=faster_whisper + int8 量化降到 ~3-4GB.
-      - ASR_MODEL=large-v3  # 可选: tiny, base, small, medium, large, large-v2, large-v3
-      - ASR_ENGINE=faster_whisper  # faster-whisper 比 openai-whisper 快 4x, 显存效率更高
-      - ASR_LANGUAGE=zh  # 可选: 指定默认语言
+      # CPU 模式下 large-v3 配合 faster_whisper + int8 量化可保证字准率, 5 分钟音频 ~3 分钟出结果.
+      # 如需更快可逐级降级 large-v3 → large-v2 → medium, 字准率换速度.
+      - ASR_MODEL=large-v3
+      - ASR_ENGINE=faster_whisper      # CPU 上比 openai-whisper 快 4x
+      - ASR_LANGUAGE=zh
+      - ASR_QUANTIZATION=int8          # CPU 量化, 显著降内存与推理时间
+      - OMP_NUM_THREADS=4               # CPU 线程数; 服务器物理核多可调大
     volumes:
       - /data/sdb/whisper/whisper_models:/root/.cache/whisper
+    restart: unless-stopped
+    networks:
+      - examiner
+
+  funasr:
+    # FunASR runtime SDK CPU 镜像, 默认开 wss://0.0.0.0:10095 + 自签证书 + Paraformer-large.
+    # 与原 `docker run ... --privileged --name=funasr ...` 等价, 但纳入 examiner 网络后,
+    # worker 直接走容器名 `wss://funasr:10095` 而不是 172.17.0.1 宿主网关, 更稳定.
+    image: registry.cn-hangzhou.aliyuncs.com/funasr_repo/funasr:funasr-runtime-sdk-cpu-0.4.6
+    container_name: funasr
+    privileged: true
+    ports:
+      - "10095:10095"
+    volumes:
+      - /data/sdb/funasr-runtime-resources/models:/workspace/models
+    restart: unless-stopped
+    stdin_open: true     # 等价于 -i
+    tty: true            # 等价于 -t, 镜像 ENTRYPOINT 需要 tty 才能正常启动 server
     networks:
       - examiner
 

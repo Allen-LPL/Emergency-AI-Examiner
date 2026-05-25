@@ -25,12 +25,19 @@ _REPEAT_WORD_RE = re.compile(r"([\u4e00-\u9fff]{1,2}?)\1{2,}")
 _REPEAT_NUMBER_RE = re.compile(r"(?:\b\d{2,5}[\s,\uff0c\u3001]+){2,}\d{2,5}")
 # "5 4 3 2 1" \u6216 "1 2 3 4 5" \u5012\u8ba1\u65f6 / \u987a\u6570, \u81f3\u5c11 4 \u4e2a\u8fde\u7eed 1-2 \u4f4d\u6574\u6570
 _COUNTDOWN_RE = re.compile(r"(?:\b\d{1,2}[\s,\uff0c\u3001]+){3,}\d{1,2}\b")
+# \u4efb\u610f 6-80 \u5b57\u77ed\u8bed\u8fde\u7eed\u91cd\u590d 3+ \u6b21, \u538b\u6210\u5355\u6b21 (\u8986\u76d6 Whisper "\u5224\u65ad\u8109\u640f\u7b49\u64cd\u4f5c..." \u00d7 17 \u8fd9\u79cd\u590d\u8bfb)
+_REPEAT_PHRASE_RE = re.compile(r"(.{6,80}?)(?:\1){2,}")
+# \u53e5\u5b50\u8fb9\u754c (\u4e2d\u82f1\u6807\u70b9 + \u6362\u884c); \u7528\u4e8e\u53e5\u7ea7\u6e05\u7406\u65f6\u5207\u53e5
+_SENTENCE_SPLIT_RE = re.compile(r"([\u3002!?\uff01\uff1f\n]+)")
 
 _MIN_SEGMENT_TEXT_LEN = 2
 _HALLUCINATION_RATIO_THRESHOLD = 0.5
-# \u6570\u5b57\u5b57\u7b26\u5360\u6bb5\u843d\u603b\u957f\u5ea6\u7684\u9608\u503c: \u8d85\u8fc7\u8be5\u6bd4\u4f8b\u8ba4\u4e3a\u6574\u6bb5\u662f\u6570\u5b57\u5e7b\u542c, \u5220\u6389\u6570\u5b57\u6bb5
-# (\u8003\u6838\u573a\u666f\u7684\u771f\u5b9e\u6309\u538b\u8ba1\u6570, \u6bb5\u5185\u901a\u5e38\u4f1a\u5939\u6742"\u7ee7\u7eed\u6309\u538b"\u3001"\u653e\u624b"\u7b49\u6c49\u5b57, \u5360\u6bd4\u4e0d\u4f1a\u5230 60%)
-_NUMBER_HALLUCINATION_RATIO = 0.6
+# \u53e5\u5185\u6570\u5b57\u5360\u6bd4\u9608\u503c: \u5355\u53e5\u4e2d\u6570\u5b57\u5b57\u7b26 >=3 \u4e14\u5360\u6bd4 >50% \u2192 \u5220\u6574\u53e5.
+# \u65e7\u7248\u672c\u7528\u5168\u6bb5\u9608\u503c 60%, Whisper 1571 \u5b57\u6df7\u5408\u771f\u5b9e\u4e2d\u6587+\u5e7b\u542c\u6570\u5b57\u6bb5, \u6574\u6bb5\u6bd4\u4f8b ~30% \u89e6\u4e0d\u5230,
+# \u6539\u6210\u53e5\u7ea7\u7c92\u5ea6\u540e\u771f\u6b63\u7684\u5e7b\u542c\u53e5 "1001\u30011002\u30011003\u30011004\u30011005" \u5355\u53e5 100% \u6570\u5b57, \u5fc5\u5220.
+# \u771f\u5b9e\u6309\u538b\u8ba1\u6570\u7531 Paraformer \u4e3b\u8def\u51fa, \u8d70\u975e aggressive \u901a\u9053\u4e0d\u4f1a\u88ab\u8bef\u5220.
+_NUMBER_PER_SENTENCE_RATIO = 0.5
+_NUMBER_PER_SENTENCE_MIN = 3
 
 
 class ASRMerger:
@@ -50,14 +57,17 @@ class ASRMerger:
         tencent_text = (tencent_result or {}).get("text", "") or ""
         tencent_segments = (tencent_result or {}).get("segments", []) or []
 
-        funasr_text_clean = self._clean_hallucinations(funasr_text)
-        whisper_text_clean = self._clean_hallucinations(whisper_text)
-        tencent_text_clean = self._clean_hallucinations(tencent_text)
+        # 外部 ASR 整段文本走 aggressive 通道: 压重复短语 + 句级数字幻听清理.
+        # Whisper 这一路最常见的两种污染都在这里被剥干净: prompt 复读 + 1001/1002... 数字串.
+        funasr_text_clean = self._clean_hallucinations(funasr_text, aggressive=True)
+        whisper_text_clean = self._clean_hallucinations(whisper_text, aggressive=True)
+        tencent_text_clean = self._clean_hallucinations(tencent_text, aggressive=True)
 
         logger.info(
             f"[ASRMerger] 输入: paraformer={len(paraformer_segments)}段, "
-            f"funasr={len(funasr_text)}字, whisper={len(whisper_text)}字, "
-            f"tencent={len(tencent_text)}字"
+            f"funasr={len(funasr_text)}字 (清洗后 {len(funasr_text_clean)}), "
+            f"whisper={len(whisper_text)}字 (清洗后 {len(whisper_text_clean)}), "
+            f"tencent={len(tencent_text)}字 (清洗后 {len(tencent_text_clean)})"
         )
 
         merged: list[dict[str, Any]] = []
@@ -133,35 +143,55 @@ class ASRMerger:
         )
         return merged
 
-    def _clean_hallucinations(self, text: str) -> str:
+    def _clean_hallucinations(self, text: str, aggressive: bool = False) -> str:
+        """清洗 ASR 文本中的幻听.
+
+        Args:
+            text: 原始 ASR 文本.
+            aggressive: 是否启用激进模式 (外部 ASR 全文用 True, Paraformer 主路段用 False).
+                       激进模式额外做: (a) 6-80 字短语重复 3+ 次压成单次,
+                                       (b) 句级数字幻听清理 (单句数字 >=3 字且占比 >50% 删整句).
+                       Paraformer 段已经是 VAD 切好的短段, 真实按压计数段不应被误删, 所以默认 False.
+        """
         if not text:
             return ""
         result = _REPEAT_WORD_RE.sub(r"\1", text)
         result = _REPEAT_CHAR_RE.sub(r"\1", result)
-        result = self._strip_number_hallucination(result)
+        if aggressive:
+            # 先压重复短语 (Whisper 复读 prompt × 17 次的兜底)
+            result = _REPEAT_PHRASE_RE.sub(r"\1", result)
+            # 再按句子清数字幻听
+            result = self._strip_number_hallucination_per_sentence(result)
         result = self._remove_noise_chars(result)
         return result.strip()
 
     @staticmethod
-    def _strip_number_hallucination(text: str) -> str:
-        """删除 Whisper 中文模型典型的"连续数字串"和"倒计时"幻听.
+    def _strip_number_hallucination_per_sentence(text: str) -> str:
+        """逐句判定数字幻听并删除整句, 比整段阈值更精准.
 
-        策略: 先找数字段, 若它们的总字符数占全文 >= 60% (说明这段几乎全是数字,
-        是 Whisper 把静音/噪声转成了数字串), 把这些数字段整段抠掉; 否则保留
-        (考核场景按压计数 "1001 1002 1003" 夹在 "继续按压...现在停" 之间, 占比不到 60% 不会误删).
+        规则: 用句末标点切句, 单句中阿拉伯数字字符数 >=3 且占该句长度 >50% → 当成幻听删整句.
+        正常句子如 "按压频率每分钟110次" 只有 3 个数字, 总长 11 字, 占比 27% < 50%, 保留.
+        幻听句如 "1001、1002、1003、1004、1005" 18 个数字字符, 占比 ~75%, 删除.
         """
         if not text:
             return text
-        matches = _REPEAT_NUMBER_RE.findall(text) + _COUNTDOWN_RE.findall(text)
-        if not matches:
-            return text
-        digit_chars = sum(len(m) for m in matches)
-        if digit_chars / max(len(text), 1) < _NUMBER_HALLUCINATION_RATIO:
-            return text
-        # 数字占比过高, 整段抠掉所有数字段
-        for m in matches:
-            text = text.replace(m, "")
-        return text
+        # _SENTENCE_SPLIT_RE 用括号捕获保留分隔符, 这样 join 后标点不丢
+        parts = _SENTENCE_SPLIT_RE.split(text)
+        cleaned: list[str] = []
+        for part in parts:
+            stripped = part.strip()
+            if len(stripped) <= 1:
+                cleaned.append(part)
+                continue
+            digit_chars = sum(1 for c in stripped if c.isdigit())
+            if (
+                digit_chars >= _NUMBER_PER_SENTENCE_MIN
+                and digit_chars / len(stripped) > _NUMBER_PER_SENTENCE_RATIO
+            ):
+                # 整句幻听, 整段删 (不保留前面的标点)
+                continue
+            cleaned.append(part)
+        return "".join(cleaned)
 
     def _remove_noise_chars(self, text: str) -> str:
         if not text or len(text) < 3:
