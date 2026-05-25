@@ -17,7 +17,31 @@
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 from typing import Any
+
+from loguru import logger
+
+# 外部热词文件: 由 CPR 标准 SRT 字幕整理而来, 308 条, 比硬编码的 HOTWORDS_* 更全面.
+# 文件格式: 词\t权重 (tab 分隔), 权重档次 30/25/20/15
+#   30 = 数字口令类 (一千零一/1001/五四三二一/还有十五秒...) → 数字场景必备但 Whisper 慎用
+#   25 = 医学术语 / 急救动作 (心肺复苏/胸外按压/肾上腺素...)
+#   20 = 生命体征 / 转运
+#   15 = 团队协作口令
+_EXTERNAL_HOTWORD_FILE = (
+    Path(__file__).resolve().parent.parent / "hotwords" / "cpr_funasr_hotwords_weighted.txt"
+)
+# 数字识别: 全数字 / 阿拉伯数字混合中文计数单位 / 纯中文计数串
+_DIGIT_PATTERN = re.compile(
+    r"^("
+    r"\d+|"                         # 纯阿拉伯数字 (1001, 30, 110)
+    r"\d+[%℃\-/到至比].*|"           # 含数字的混合 (92%到98%, 100-120, 30比2)
+    r".*\d+.*|"                     # 任意含阿拉伯数字
+    r"[零一二三四五六七八九十百千万]{2,}|"  # 纯中文数字串 (一千零一/三十/五四三二一)
+    r".*[零一二三四五六七八九十百千万]{3,}.*"  # 含 3+ 连续中文数字字符
+    r")$"
+)
 
 
 # ------------------------------------------------------------------ #
@@ -316,8 +340,51 @@ _ALL_GROUPS: list[list[tuple[str, int]]] = [
 ]
 
 
+def _load_external_hotwords() -> list[tuple[str, int]]:
+    """从 cpr_funasr_hotwords_weighted.txt 加载 308 条 CPR 标准热词.
+
+    文件格式: 每行 `词\\t权重`, 权重为整数.
+    解析失败/文件缺失时返回空列表并 warn, 不阻塞主链路.
+    """
+    if not _EXTERNAL_HOTWORD_FILE.exists():
+        logger.warning(
+            f"[hotwords] 外部热词文件不存在, 跳过: {_EXTERNAL_HOTWORD_FILE}"
+        )
+        return []
+    entries: list[tuple[str, int]] = []
+    try:
+        with _EXTERNAL_HOTWORD_FILE.open("r", encoding="utf-8") as f:
+            for line_no, raw in enumerate(f, 1):
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                # 容错: tab 或多空格分隔均可
+                parts = re.split(r"[\t ]+", line, maxsplit=1)
+                if len(parts) != 2:
+                    continue
+                word, weight_str = parts
+                try:
+                    entries.append((word.strip(), int(weight_str)))
+                except ValueError:
+                    logger.warning(
+                        f"[hotwords] {_EXTERNAL_HOTWORD_FILE.name}:{line_no} "
+                        f"权重无法解析, 跳过: {line!r}"
+                    )
+        logger.info(
+            f"[hotwords] 从 {_EXTERNAL_HOTWORD_FILE.name} 加载 {len(entries)} 条热词"
+        )
+    except OSError as exc:
+        logger.error(f"[hotwords] 读取外部热词文件失败: {exc}")
+        return []
+    return entries
+
+
 def _build_hotword_dict() -> dict[str, int]:
-    """合并所有分组, 去重取最大权重."""
+    """合并所有分组 (硬编码 HOTWORDS_* + 外部 cpr 热词文件), 去重取最大权重.
+
+    外部文件权重档次是 15/20/25/30, 硬编码档次是 7/8/10/11/100,
+    数值不同但都是相对权重, 同名词取 max 即可让最强者生效.
+    """
     result: dict[str, int] = {}
     for group in _ALL_GROUPS:
         for word, weight in group:
@@ -325,6 +392,12 @@ def _build_hotword_dict() -> dict[str, int]:
                 result[word] = max(result[word], weight)
             else:
                 result[word] = weight
+    # 追加外部 CPR 标准热词 (308 条), 与硬编码合并
+    for word, weight in _load_external_hotwords():
+        if word in result:
+            result[word] = max(result[word], weight)
+        else:
+            result[word] = weight
     return result
 
 
@@ -372,20 +445,66 @@ def get_high_priority_words(min_weight: int = 100) -> list[str]:
     return [w for w, v in get_hotword_dict().items() if v >= min_weight]
 
 
+def export_tencent_hotwords(output_path: str | None = None) -> str:
+    """导出腾讯云 ASR 热词表格式 (一行一词 `词 权重`, 空格分隔, 权重 1-100).
+
+    腾讯云控制台-语音识别-自学习模型-热词管理 接受的上传格式即「词 权重」,
+    与 FunASR 格式基本一致, 直接复用合并后的热词字典即可.
+
+    Args:
+        output_path: 可选, 写入文件路径; None 时仅返回字符串内容.
+
+    Returns:
+        热词表内容字符串. 可直接复制到腾讯云控制台粘贴, 或保存为 .txt 上传.
+
+    使用方式:
+        python -c "from ai_engine.audio.hotwords import export_tencent_hotwords; \\
+                   print(export_tencent_hotwords('/tmp/tencent_hotwords.txt'))"
+    """
+    hotword_dict = get_hotword_dict()
+    # 腾讯权重上限 100, 我们的最高 100, 不需要 rescale
+    lines = [f"{word} {weight}" for word, weight in hotword_dict.items()]
+    content = "\n".join(lines) + "\n"
+    if output_path:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text(content, encoding="utf-8")
+        logger.info(
+            f"[hotwords] 已导出 {len(lines)} 条腾讯热词到 {output_path}"
+        )
+    return content
+
+
+def _is_digit_hotword(word: str) -> bool:
+    """判断热词是否属于"数字口令"类 (1001/一千零一/五四三二一/30比2/还有15秒...).
+
+    背景: Whisper 在中文医疗场景最严重的幻听就是数字串 ('1001 1002 1003...'),
+    如果把这类词塞进 initial_prompt, 反而会暗示模型"该区域应该输出数字",
+    与我们消除数字幻听的目标背道而驰. 所以 Whisper initial_prompt 必须过滤掉.
+    """
+    return bool(_DIGIT_PATTERN.match(word))
+
+
 def get_whisper_initial_prompt() -> str:
-    """生成 Whisper initial_prompt: 领域描述 + 高权重热词样本.
+    """生成 Whisper initial_prompt: 领域描述 + 高权重医学术语热词.
 
     背景: Whisper 在中文医疗领域裸跑会大量幻听 (纯数字串/倒计时/重复短语).
     initial_prompt 给模型注入领域上下文, 可显著压低幻听并提高术语命中.
 
+    关键过滤: 跳过数字口令类热词 (见 _is_digit_hotword), 避免反向诱导数字幻听.
+    数字识别在 FunASR/Paraformer 路用全套 308 条热词覆盖, Whisper 这一路只做术语校准.
+
     限制: Whisper 把 initial_prompt 转成 token, 上限 224 token,
-    超出会截断且损失末尾内容. 中文 1 字约 ~1.5 token, 所以总长控制在 130 字内,
-    只挑权重 >= 10 的高优先级热词, 再做截断兜底.
+    中文 1 字约 ~1.5 token, 所以总长控制在 130 字内, 再做截断兜底.
     """
     hotword_dict = get_hotword_dict()
-    # 权重 >=10 的热词按权重降序拍平, 优先保住核心动作/术语
+    # 1. 跳过数字类 (避免诱导数字幻听)
+    # 2. 权重 >=10 (外部文件最低 15, 旧硬编码最低 7, 阈值 10 能兜住外部全集 + 硬编码核心)
+    # 3. 按权重降序, 优先保住核心动作/术语
     high_words = sorted(
-        [(w, v) for w, v in hotword_dict.items() if v >= 10],
+        [
+            (w, v) for w, v in hotword_dict.items()
+            if v >= 10 and not _is_digit_hotword(w)
+        ],
         key=lambda x: -x[1],
     )
     candidate = [w for w, _ in high_words]
@@ -430,6 +549,7 @@ __all__ = [
     "get_hotword_set",
     "get_high_priority_words",
     "get_whisper_initial_prompt",
+    "export_tencent_hotwords",
     "get_hotwords",
     "get_hotword_prompt",
 ]

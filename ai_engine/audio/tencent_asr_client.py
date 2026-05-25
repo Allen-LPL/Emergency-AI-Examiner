@@ -22,9 +22,11 @@
 凭证未配齐时静默返回空结果, 不抛异常, 不影响主链路.
 
 如何启用热词 (推荐):
-    1. 登录腾讯云控制台 -> 语音识别 -> 自学习模型 -> 热词管理, 新建热词表;
-    2. 把急救/医疗术语 (心肺复苏、除颤、肾上腺素、球囊通气...) 录入, 每行 "词 权重",
-       权重 1-100, 配合 hotwords.py 里 HOTWORDS_* 的 weight 即可;
+    1. 在本地直接导出我们整理好的 308 条 CPR 标准热词 (含权重):
+         python -c "from ai_engine.audio.hotwords import export_tencent_hotwords; \\
+                    export_tencent_hotwords('/tmp/tencent_hotwords.txt')"
+    2. 登录腾讯云控制台 -> 语音识别 -> 自学习模型 -> 热词管理, 新建热词表,
+       把 /tmp/tencent_hotwords.txt 内容粘贴/上传进去;
     3. 创建后拿到 HotwordId (形如 "hw-12345"), 填入 .env 的 AI_TENCENT_HOTWORD_ID;
     4. 重启 worker 容器即生效, 留空则不传该字段 (向后兼容).
 """
