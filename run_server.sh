@@ -43,24 +43,30 @@ echo "[funasr] 工作目录 (必须): $FUNASR_RUNTIME_DIR"
 echo "[funasr] 模型下载/缓存目录: $MODEL_DIR"
 echo "[funasr] 日志文件: $LOG_FILE"
 
-# nohup + & 让 server 后台跑, 当前 shell 立即返回去 tail 日志.
-# 用 bash run_server.sh 而不是 bash $FUNASR_RUNTIME_SH, 是为了让内置脚本看到的 $0 是相对名,
-# 跟它内部 ./tools/utils/... 的相对路径预期一致.
+# nohup + & 让 run_server.sh 后台跑.
+# 注意进程模型: bash 包装进程 ($!) 启动 funasr-wss-server (C++ binary) 后会很快退出,
+# 真正的 server 是 funasr-wss-server. 之前误把 bash 父进程当成 server 检查存活, 5 秒后必然误判为挂掉,
+# 导致脚本 exit 1 + docker 重启 + 日志截断的死循环.
+# 用 bash run_server.sh (相对名) 而不是绝对路径, 让内置脚本看到的 $0 与它的 ./tools/utils/... 相对路径预期一致.
 nohup bash run_server.sh \
     --download-model-dir "$MODEL_DIR" \
     > "$LOG_FILE" 2>&1 &
 
-server_pid=$!
-echo "[funasr] server pid=$server_pid, 等 5 秒后开始 tail 日志 ..."
-sleep 5
+bash_pid=$!
+echo "[funasr] bash 包装进程 pid=$bash_pid, 等 15 秒让 server binary 启动 + 开始下载模型 ..."
+# 等长一点: run_server.sh 内部会先做日志框架初始化, 然后 fork 出 funasr-wss-server,
+# 后者会从 modelscope 拉模型 (首启 ~3-5 分钟); 但 15 秒内 binary 进程一定已经 fork 出来了.
+sleep 15
 
-# 如果 server 已经死了 (启动失败), 直接报错退出, 让容器 restart 策略生效
-if ! kill -0 "$server_pid" 2>/dev/null; then
-    echo "[funasr] ERROR: server 进程 $server_pid 已退出, 启动失败. 日志最后 30 行:" >&2
-    tail -n 30 "$LOG_FILE" >&2 || true
+# pgrep 真正的 server binary (C++ funasr-wss-server)
+server_pid="$(pgrep -f -n funasr-wss-server || true)"
+if [[ -z "$server_pid" ]]; then
+    echo "[funasr] ERROR: funasr-wss-server 进程未找到, 启动失败. 日志最后 50 行:" >&2
+    tail -n 50 "$LOG_FILE" >&2 || true
     exit 1
 fi
+echo "[funasr] server binary pid=$server_pid, 开始 tail 日志 (server 死时 tail 自动退出, 触发 docker restart) ..."
 
-# tail -f 让容器 PID 1 保持前台; server 挂掉时 tail 仍在跑,
-# 配合 docker-compose 的 restart: unless-stopped 由外层 docker 监控容器整体存活
-exec tail -f "$LOG_FILE"
+# tail --pid=$server_pid: server 进程退出时 tail 自动结束 -> 容器 PID 1 退出 -> docker restart 触发.
+# 这是 docker 健康监控的正确方式 (前一版用裸 tail -f 在 server 挂掉后会一直 idle, docker 无法感知).
+exec tail --pid="$server_pid" -f "$LOG_FILE"
