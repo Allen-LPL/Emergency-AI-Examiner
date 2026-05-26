@@ -33,12 +33,20 @@ fi
 
 mkdir -p "$MODEL_DIR"
 
+# FunASR 内置 run_server.sh 用了相对路径调 ./tools/utils/parse_options.sh,
+# 必须在 /workspace/FunASR/runtime 目录下执行, 否则会报 No such file or directory.
+readonly FUNASR_RUNTIME_DIR="$(dirname "$FUNASR_RUNTIME_SH")"
+cd "$FUNASR_RUNTIME_DIR"
+
 echo "[funasr] 启动 ONNX server: $FUNASR_RUNTIME_SH"
+echo "[funasr] 工作目录 (必须): $FUNASR_RUNTIME_DIR"
 echo "[funasr] 模型下载/缓存目录: $MODEL_DIR"
 echo "[funasr] 日志文件: $LOG_FILE"
 
-# nohup + & 让 server 后台跑, 当前 shell 立即返回去 tail 日志
-nohup bash "$FUNASR_RUNTIME_SH" \
+# nohup + & 让 server 后台跑, 当前 shell 立即返回去 tail 日志.
+# 用 bash run_server.sh 而不是 bash $FUNASR_RUNTIME_SH, 是为了让内置脚本看到的 $0 是相对名,
+# 跟它内部 ./tools/utils/... 的相对路径预期一致.
+nohup bash run_server.sh \
     --download-model-dir "$MODEL_DIR" \
     > "$LOG_FILE" 2>&1 &
 
