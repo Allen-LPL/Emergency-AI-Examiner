@@ -171,6 +171,7 @@ services:
     ports:
       - "10095:10095"
     volumes:
+      - /data/sdb/funasr-runtime-resources/:/workspace/
       - /data/sdb/funasr-runtime-resources/models:/workspace/models
     restart: unless-stopped
     # 首启需要从 modelscope.cn 拉模型. modelscope 在国内, 容器内若 DNS/路由异常仍可能失败,
