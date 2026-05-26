@@ -182,24 +182,19 @@ services:
       - http_proxy=http://172.17.0.1:10809
       - NO_PROXY=localhost,127.0.0.1,modelscope.cn,modelscope.com,oss-cn-hangzhou.aliyuncs.com,*.aliyuncs.com
       - no_proxy=localhost,127.0.0.1,modelscope.cn,modelscope.com,oss-cn-hangzhou.aliyuncs.com,*.aliyuncs.com
-    # Paraformer-large + VAD + 标点 + ngram LM + 热词. 启动后立即在 0.0.0.0:10095 wss 监听.
-    # 用 tail -f 是 trick: 让 PID 1 保持前台运行, 否则 server 是 nohup 后台进程, 容器会立即退出.
-    # ssl_key 路径来自镜像内置 /workspace/FunASR/runtime/ssl_key/server.{crt,key}
+    # 启动 FunASR offline server, 模型用镜像默认 ONNX 版组合 (Paraformer-large-vad-punc + ITN + LM):
+    #   - speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-onnx  (一体化 ASR+VAD+Punc, C++ ONNX runtime)
+    #   - speech_fsmn_vad_zh-cn-16k-common-onnx                                     (独立 VAD)
+    #   - punc_ct-transformer_cn-en-common-vocab471067-large-onnx                   (中英标点)
+    #   - thuduj12/fst_itn_zh                                                       (中文反归一化)
+    #   - speech_ngram_lm_zh-cn-ai-wesp-fst                                         (Ngram 语言模型)
+    # ONNX 版比 PyTorch 版快 2-3x, 是 FunASR runtime SDK 官方推荐;
+    # ssl_key/server.{crt,key} 来自镜像内置, run_server.sh 自带相对路径默认值.
+    # 用 tail -f 是 trick: 让 PID 1 保持前台运行, 否则 nohup 后台进程容器会立即退出.
+    # 注意 YAML `>` 折叠 + bash 反斜杠续行不兼容, 所以这里把所有参数写成 yaml 一行,
+    # 折叠后是单行 bash 命令, 不再有 'command not found' 错误.
     command: >
-      bash -c "
-        cd /workspace/FunASR/runtime &&
-        nohup bash run_server.sh \
-          --download-model-dir /workspace/models \
-          --model-dir damo/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch \
-          --vad-dir damo/speech_fsmn_vad_zh-cn-16k-common-pytorch \
-          --punc-dir damo/punc_ct-transformer_cn-en-common-vocab471067-large-onnx \
-          --certfile ../../../ssl_key/server.crt \
-          --keyfile ../../../ssl_key/server.key \
-          > /workspace/funasr_server.log 2>&1 &
-        sleep 5 &&
-        echo '[funasr] server starting, tailing log...' &&
-        tail -f /workspace/funasr_server.log
-      "
+      bash -c "nohup bash /workspace/FunASR/runtime/run_server.sh --download-model-dir /workspace/models > /workspace/funasr_server.log 2>&1 & sleep 5 && echo '[funasr] server starting, tailing log...' && tail -f /workspace/funasr_server.log"
     networks:
       - examiner
 
