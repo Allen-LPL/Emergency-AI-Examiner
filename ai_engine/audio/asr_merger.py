@@ -21,6 +21,9 @@ from ai_engine.audio.hotwords import get_hotword_set
 
 _REPEAT_CHAR_RE = re.compile(r"(.)\1{2,}")
 _REPEAT_WORD_RE = re.compile(r"([\u4e00-\u9fff]{1,2}?)\1{2,}")
+# \u4e2d\u6587\u5b57\u7b26\u4e4b\u95f4\u7684\u7a7a\u767d (FunASR runtime SDK ONNX \u8f93\u51fa text_seg \u5b57\u4e0e\u5b57\u95f4\u7528\u7a7a\u683c\u5206\u9694).
+# \u4e0d\u5f52\u4e00\u5316\u7684\u8bdd "\u53d6 \u53d6 \u53d6 \u53d6" \u4e0d\u4f1a\u88ab _REPEAT_CHAR_RE \u5339\u914d, \u566a\u97f3\u5b57\u7b26\u6d41\u4e0d\u5230\u6e05\u6d17\u903b\u8f91.
+_CJK_INTERNAL_SPACE_RE = re.compile(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])")
 # \u8fde\u7eed 3+ \u4e2a\u7531\u7a7a\u683c/\u9017\u53f7\u5206\u9694\u7684 2-5 \u4f4d\u6570\u5b57 token, \u5178\u578b Whisper \u4e2d\u6587\u5e7b\u542c "1001 1002 1003 1004 1005"
 _REPEAT_NUMBER_RE = re.compile(r"(?:\b\d{2,5}[\s,\uff0c\u3001]+){2,}\d{2,5}")
 # "5 4 3 2 1" \u6216 "1 2 3 4 5" \u5012\u8ba1\u65f6 / \u987a\u6570, \u81f3\u5c11 4 \u4e2a\u8fde\u7eed 1-2 \u4f4d\u6574\u6570
@@ -155,7 +158,10 @@ class ASRMerger:
         """
         if not text:
             return ""
-        result = _REPEAT_WORD_RE.sub(r"\1", text)
+        # 先归一化中文字之间的空白, 否则 FunASR 的 "取 取 取 取" 不会被字符重复正则匹配,
+        # 大段"取"幻听污染合并结果. 见 2026-05-26 funasr_server.log 实例.
+        result = _CJK_INTERNAL_SPACE_RE.sub("", text)
+        result = _REPEAT_WORD_RE.sub(r"\1", result)
         result = _REPEAT_CHAR_RE.sub(r"\1", result)
         if aggressive:
             # 先压重复短语 (Whisper 复读 prompt × 17 次的兜底)

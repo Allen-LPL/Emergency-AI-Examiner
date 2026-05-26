@@ -60,9 +60,10 @@ class AIEngineConfig(BaseSettings):
         default="wss://funasr:10095",
         description="FunASR WebSocket server URL (offline mode), docker-compose 服务名",
     )
-    # 超时从 120 提到 600 秒, 适配 5+ 分钟考核音频
+    # FunASR runtime SDK CPU 模式推理较慢, 5 分钟音频 ~10 分钟出结果, 10 分钟音频可能 >20 分钟,
+    # 超时给到 1800 秒保险 (GPU 模式可降到 600). 之前 600 秒 client 已 timeout 但 server 还在跑.
     funasr_ws_timeout: int = Field(
-        default=600, description="FunASR WebSocket 超时秒数 (含连接 + 转写)",
+        default=1800, description="FunASR WebSocket 超时秒数 (CPU 模式建议 1800, GPU 600)",
     )
     whisper_http_url: str = Field(
         default="http://whisper-api:9000/asr",
