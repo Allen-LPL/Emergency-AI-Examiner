@@ -63,14 +63,14 @@ class AIEngineConfig(BaseSettings):
     # FunASR runtime SDK CPU 模式推理较慢, 5 分钟音频 ~10 分钟出结果, 10 分钟音频可能 >20 分钟,
     # 超时给到 1800 秒保险 (GPU 模式可降到 600). 之前 600 秒 client 已 timeout 但 server 还在跑.
     funasr_ws_timeout: int = Field(
-        default=1800, description="FunASR WebSocket 超时秒数 (CPU 模式建议 1800, GPU 600)",
+        default=3000, description="FunASR WebSocket 超时秒数 (CPU 模式建议 1800, GPU 600)",
     )
     whisper_http_url: str = Field(
         default="http://whisper-api:9000/asr",
         description="Whisper ASR HTTP API endpoint, docker-compose 服务名",
     )
     whisper_http_timeout: int = Field(
-        default=600, description="Whisper HTTP 请求超时秒数",
+        default=1800, description="Whisper HTTP 请求超时秒数",
     )
     enable_external_asr: bool = Field(
         default=True,
@@ -79,23 +79,25 @@ class AIEngineConfig(BaseSettings):
 
     # Tencent Cloud ASR (录音文件识别, 异步任务接口) — 与 FunASR/Whisper 解耦的第三路冗余
     enable_tencent_asr: bool = Field(
-        default=False, description="是否启用腾讯云 ASR 第三路 (默认关闭)"
+        default=True, description="是否启用腾讯云 ASR 第三路 (默认开启)"
     )
-    tencent_secret_id: str = Field(default="", description="腾讯云 SecretId")
-    tencent_secret_key: str = Field(default="", description="腾讯云 SecretKey")
-    tencent_app_id: int = Field(default=0, description="腾讯云 AppId")
+    # 凭证不再硬编码源码: 默认空串, 实际值通过 .env 注入 (AI_TENCENT_SECRET_ID 等).
+    # AudioPipeline 已有"凭证齐全才启用"短路保护, 空串等价于"未配置则跳过该路", 向后兼容.
+    tencent_secret_id: str = Field(default="", description="腾讯云 SecretId, 从 .env 读取 (AI_TENCENT_SECRET_ID)")
+    tencent_secret_key: str = Field(default="", description="腾讯云 SecretKey, 从 .env 读取 (AI_TENCENT_SECRET_KEY)")
+    tencent_app_id: int = Field(default=0, description="腾讯云 AppId, 从 .env 读取 (AI_TENCENT_APP_ID)")
     tencent_engine_type: str = Field(
         default="16k_zh", description="腾讯云 ASR 引擎模型, 默认 16k 中文通用"
     )
     tencent_asr_timeout: int = Field(
-        default=600, description="腾讯云 ASR 总超时 (含轮询任务状态)"
+        default=1800, description="腾讯云 ASR 总超时 (含轮询任务状态)"
     )
     tencent_hotword_id: str = Field(
         default="",
         description=(
-            "腾讯云 ASR 热词表 ID (形如 hw-xxxxx). "
+            "腾讯云 ASR 热词表 ID (形如 hw-xxxxx), 从 .env 读取 (AI_TENCENT_HOTWORD_ID). "
             "需要先在腾讯云控制台-语音识别-自学习模型-热词管理建好热词表后填入. "
-            "留空则不启用热词 (向后兼容)"
+            "留空则不启用热词 (向后兼容)."
         ),
     )
 

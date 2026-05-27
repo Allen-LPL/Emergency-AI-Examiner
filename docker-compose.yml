@@ -57,8 +57,8 @@ services:
       - HTTPS_PROXY=http://172.17.0.1:10809
       - http_proxy=http://172.17.0.1:10809
       - https_proxy=http://172.17.0.1:10809
-      - NO_PROXY=localhost,127.0.0.1,db,redis,api,frontend,examiner_db,examiner_redis,examiner_api,examiner_frontend,modelscope.cn,modelscope.com
-      - no_proxy=localhost,127.0.0.1,db,redis,api,frontend,examiner_db,examiner_redis,examiner_api,examiner_frontend,modelscope.cn,modelscope.com
+      - NO_PROXY=localhost,127.0.0.1,db,redis,api,frontend,examiner_db,examiner_redis,examiner_api,examiner_frontend,modelscope.cn,modelscope.com,whisper-api,funasr,celery_worker,flower
+      - no_proxy=localhost,127.0.0.1,db,redis,api,frontend,examiner_db,examiner_redis,examiner_api,examiner_frontend,modelscope.cn,modelscope.com,whisper-api,funasr,celery_worker,flower
     # celery_worker 同样绑定到宿主机 uploads / outputs, 与 api 容器共享读写
     # model_cache 仍使用命名卷, 用于缓存 HuggingFace / Ultralytics 等模型权重
     volumes:
@@ -153,8 +153,8 @@ services:
       - HTTP_PROXY=http://172.17.0.1:10809
       - https_proxy=http://172.17.0.1:10809
       - http_proxy=http://172.17.0.1:10809
-      - NO_PROXY=localhost,127.0.0.1
-      - no_proxy=localhost,127.0.0.1
+      - NO_PROXY=localhost,127.0.0.1,modelscope.cn,modelscope.com,oss-cn-hangzhou.aliyuncs.com,*.aliyuncs.com,db,redis,api,frontend,examiner_db,examiner_redis,examiner_api,examiner_frontend,funasr,celery_worker,flower
+      - no_proxy=localhost,127.0.0.1,modelscope.cn,modelscope.com,oss-cn-hangzhou.aliyuncs.com,*.aliyuncs.com,db,redis,api,frontend,examiner_db,examiner_redis,examiner_api,examiner_frontend,funasr,celery_worker,flower
     volumes:
       - /data/sdb/whisper/whisper_models:/root/.cache/whisper
     restart: unless-stopped
@@ -183,8 +183,8 @@ services:
       - HTTP_PROXY=http://172.17.0.1:10809
       - https_proxy=http://172.17.0.1:10809
       - http_proxy=http://172.17.0.1:10809
-      - NO_PROXY=localhost,127.0.0.1,modelscope.cn,modelscope.com,oss-cn-hangzhou.aliyuncs.com,*.aliyuncs.com
-      - no_proxy=localhost,127.0.0.1,modelscope.cn,modelscope.com,oss-cn-hangzhou.aliyuncs.com,*.aliyuncs.com
+      - NO_PROXY=localhost,127.0.0.1,modelscope.cn,modelscope.com,oss-cn-hangzhou.aliyuncs.com,*.aliyuncs.com,db,redis,api,frontend,examiner_db,examiner_redis,examiner_api,examiner_frontend,whisper-api,celery_worker,flower
+      - no_proxy=localhost,127.0.0.1,modelscope.cn,modelscope.com,oss-cn-hangzhou.aliyuncs.com,*.aliyuncs.com,db,redis,api,frontend,examiner_db,examiner_redis,examiner_api,examiner_frontend,whisper-api,celery_worker,flower
     # 启动逻辑全部挪到外部脚本 ./run_server.sh, 通过上面的 volume mount 到容器 /start_funasr.sh.
     # 好处: 解决了 YAML `>` 折叠 + bash 反斜杠续行不兼容的问题 (之前 inline 命令报
     # `--download-model-dir: command not found`); 脚本内还做了 server 进程存活检查 + 启动失败堆栈打印.

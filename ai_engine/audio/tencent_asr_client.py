@@ -36,10 +36,12 @@ from __future__ import annotations
 import base64
 import json
 import re
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
+import soundfile as sf
 from loguru import logger
 
 try:
@@ -57,9 +59,12 @@ except ImportError:
 
 # 腾讯云录音文件识别 Data 字段最大 5MB (base64 编码后),
 # 对应原始 PCM 约 3.75MB. 16k mono 16bit PCM 约 32KB/s, 约能装 2min 音频.
-# wav 容器带头部但有压缩感, 16k mono PCM-16 wav 约 32KB/s, 实际能装 ~2min.
-# 超过此阈值需要走 COS URL 模式, 目前先抛错明示, 后续按需扩展.
-_MAX_DATA_BYTES = 5 * 1024 * 1024  # 5MB 编码前安全阈值
+# 超过此阈值的音频会被 transcribe() 自动按 _CHUNK_SECONDS 切片串行上传, 再按 offset 合并段时间戳.
+_MAX_DATA_BYTES = 5 * 1024 * 1024  # 5MB 单片上限 (与下方切片秒数互相校准)
+
+# 单片切分时长 (秒). 16k mono PCM-16 = 32KB/s, 140s ≈ 4.38MB raw, 留出 wav 头与传输余量,
+# 仍在 5MB 阈值内. 若日志出现 413 / "data too large" 等错误, 可适度下调到 120.
+_CHUNK_SECONDS = 140
 
 # 腾讯返回的 Result 字段格式: "[0:0.480,0:3.220]  你好,介绍急救包\n[0:3.220,0:6.480]  ..."
 # 时间戳格式: [分:秒.毫秒,分:秒.毫秒]
@@ -88,6 +93,7 @@ class TencentASRClient:
         self.hotword_id = hotword_id
 
     def transcribe(self, audio_path: str) -> dict[str, Any]:
+        """转写入口: ≤5MB 单片直传, 否则按 _CHUNK_SECONDS 自动切片串行上传后合并."""
         # 凭证缺失静默跳过, 不影响主链路
         if not self.secret_id or not self.secret_key or self.app_id <= 0:
             logger.warning(
@@ -107,11 +113,104 @@ class TencentASRClient:
             logger.error(f"[TencentASRClient] 文件不存在: {audio_path}")
             return self._empty_result()
 
+        file_size = Path(audio_path).stat().st_size
+        if file_size <= _MAX_DATA_BYTES:
+            return self._transcribe_chunk(audio_path, offset_sec=0.0)
+
+        logger.info(
+            f"[TencentASRClient] 音频 {file_size/1024/1024:.2f}MB 超过单片 "
+            f"{_MAX_DATA_BYTES/1024/1024:.0f}MB 上限, 按 {_CHUNK_SECONDS}s/片自动切分上传"
+        )
+        return self._transcribe_chunked(audio_path)
+
+    def _transcribe_chunked(self, audio_path: str) -> dict[str, Any]:
+        """大文件分片入口: 流式切 wav -> 逐片调用 -> 段时间戳整体平移后合并.
+
+        任一分片失败不影响其余分片, 与"第三路冗余"的容灾定位保持一致;
+        全部分片失败才退回空结果. tmp wav 文件在 finally 中清理.
+        """
+        chunks: list[tuple[str, float]] = []
+        try:
+            try:
+                with sf.SoundFile(audio_path) as src:
+                    samplerate = src.samplerate
+                    channels = src.channels
+                    chunk_frames = int(samplerate * _CHUNK_SECONDS)
+                    idx = 0
+                    while True:
+                        frames = src.read(chunk_frames, dtype="int16")
+                        # soundfile 在没有更多数据时返回空数组
+                        if frames is None or len(frames) == 0:
+                            break
+                        offset_sec = float(idx * _CHUNK_SECONDS)
+                        with tempfile.NamedTemporaryFile(
+                            suffix=".wav",
+                            delete=False,
+                            prefix=f"tencent_chunk_{idx}_",
+                        ) as tmp:
+                            chunk_path = tmp.name
+                        sf.write(chunk_path, frames, samplerate, subtype="PCM_16")
+                        chunks.append((chunk_path, offset_sec))
+                        idx += 1
+            except Exception as exc:
+                logger.exception(f"[TencentASRClient] 音频切分失败: {exc}")
+                return self._empty_result()
+
+            if not chunks:
+                logger.error("[TencentASRClient] 切分后未得到任何分片, 跳过")
+                return self._empty_result()
+
+            logger.info(
+                f"[TencentASRClient] 切分完成, 共 {len(chunks)} 片, "
+                f"采样率={samplerate}Hz, 声道={channels}"
+            )
+
+            merged_text_parts: list[str] = []
+            merged_segments: list[dict[str, Any]] = []
+            success_count = 0
+            for i, (chunk_path, offset_sec) in enumerate(chunks):
+                try:
+                    result = self._transcribe_chunk(chunk_path, offset_sec=offset_sec)
+                except Exception as exc:
+                    logger.exception(
+                        f"[TencentASRClient] 第 {i+1}/{len(chunks)} 片转写异常: {exc}"
+                    )
+                    continue
+
+                if not result["text"] and not result["segments"]:
+                    logger.warning(
+                        f"[TencentASRClient] 第 {i+1}/{len(chunks)} 片返回空, 跳过"
+                    )
+                    continue
+
+                success_count += 1
+                if result["text"]:
+                    merged_text_parts.append(result["text"])
+                merged_segments.extend(result["segments"])
+
+            if success_count == 0:
+                logger.error("[TencentASRClient] 所有分片均失败, 返回空结果")
+                return self._empty_result()
+
+            total_text = "".join(merged_text_parts)
+            logger.info(
+                f"[TencentASRClient] 分片合并完成: {success_count}/{len(chunks)} 片成功, "
+                f"总 segments={len(merged_segments)}, 总字数={len(total_text)}"
+            )
+            return {"text": total_text, "segments": merged_segments}
+        finally:
+            for chunk_path, _ in chunks:
+                Path(chunk_path).unlink(missing_ok=True)
+
+    def _transcribe_chunk(
+        self, audio_path: str, offset_sec: float = 0.0
+    ) -> dict[str, Any]:
+        """单片调用腾讯 ASR; offset_sec 把片相对时间戳平移到全局时间."""
         t0 = time.monotonic()
         logger.info(
             f"[TencentASRClient] 开始转写: file={audio_path}, "
             f"engine={self.engine_type}, timeout={self.timeout}s, "
-            f"hotword_id={self.hotword_id or '<未配置>'}"
+            f"hotword_id={self.hotword_id or '<未配置>'}, offset={offset_sec:.1f}s"
         )
 
         try:
@@ -119,10 +218,10 @@ class TencentASRClient:
                 raw_bytes = f.read()
             data_len = len(raw_bytes)
             if data_len > _MAX_DATA_BYTES:
+                # 走到这里说明上层切分异常 (单片仍然 > 5MB), 直接放弃
                 logger.error(
-                    f"[TencentASRClient] 音频过大 ({data_len/1024/1024:.1f}MB), "
-                    f"超过 Data 模式上限 {_MAX_DATA_BYTES/1024/1024:.0f}MB; "
-                    f"长音频需走 COS URL 模式 (待扩展)"
+                    f"[TencentASRClient] 切片后单片仍超限 "
+                    f"({data_len/1024/1024:.1f}MB > {_MAX_DATA_BYTES/1024/1024:.0f}MB), 跳过"
                 )
                 return self._empty_result()
 
@@ -131,7 +230,8 @@ class TencentASRClient:
             client = self._build_client()
             task_id = self._create_task(client, data_b64, data_len)
             logger.info(
-                f"[TencentASRClient] CreateRecTask 提交成功: task_id={task_id}"
+                f"[TencentASRClient] CreateRecTask 提交成功: task_id={task_id}, "
+                f"offset={offset_sec:.1f}s"
             )
 
             result_text = self._poll_task(client, task_id, t0)
@@ -139,6 +239,17 @@ class TencentASRClient:
                 return self._empty_result()
 
             segments = self._parse_result_text(result_text)
+            # 整体平移: 把分片本地时间戳转为全局时间戳
+            if offset_sec and segments:
+                segments = [
+                    {
+                        "start": round(s["start"] + offset_sec, 3),
+                        "end": round(s["end"] + offset_sec, 3),
+                        "text": s["text"],
+                    }
+                    for s in segments
+                ]
+
             joined_text = "".join(s["text"] for s in segments) if segments else ""
             # Result 里把时间戳行去掉就是干净文本
             full_text = joined_text or re.sub(
@@ -148,27 +259,31 @@ class TencentASRClient:
             elapsed = time.monotonic() - t0
             logger.info(
                 f"[TencentASRClient] 转写成功: {len(full_text)}字, "
-                f"耗时={elapsed:.1f}s, segments={len(segments)}"
+                f"耗时={elapsed:.1f}s, segments={len(segments)}, offset={offset_sec:.1f}s"
             )
             # 完整文本落日志便于复盘 ASR 质量 (用户明确要求)
-            logger.info(f"[TencentASRClient] 转写文本: {full_text}")
+            logger.info(
+                f"[TencentASRClient] 转写文本(offset={offset_sec:.1f}s): {full_text}"
+            )
 
             return {"text": full_text, "segments": segments}
 
         except _TencentTaskFailed as exc:
             logger.error(
                 f"[TencentASRClient] 任务失败: task_id={exc.task_id}, "
-                f"error_msg={exc.error_msg}"
+                f"error_msg={exc.error_msg}, offset={offset_sec:.1f}s"
             )
         except _TencentPollTimeout as exc:
             logger.error(
                 f"[TencentASRClient] 轮询超时 ({self.timeout}s): "
-                f"task_id={exc.task_id}, 已耗时={exc.elapsed:.1f}s"
+                f"task_id={exc.task_id}, 已耗时={exc.elapsed:.1f}s, "
+                f"offset={offset_sec:.1f}s"
             )
         except Exception as exc:
             # SDK 抛 TencentCloudSDKException 时也会带 RequestId, 在 str(exc) 里
             logger.exception(
-                f"[TencentASRClient] 转写异常 ({type(exc).__name__}): {exc}"
+                f"[TencentASRClient] 转写异常 ({type(exc).__name__}): {exc}, "
+                f"offset={offset_sec:.1f}s"
             )
 
         return self._empty_result()
