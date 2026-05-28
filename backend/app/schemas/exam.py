@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 class ExamResponse(BaseModel):
     id: int
-    user_id: int
+    device_code: str
     video_url: str
     processed_video_url: str | None = None
     status: str
@@ -28,6 +28,8 @@ class ExamStatusResponse(BaseModel):
 class ExamUploadResponse(BaseModel):
     exam_id: int
     task_id: str
+    device_code: str
+    metrics_received: bool
     status: str = "pending"
 
 
