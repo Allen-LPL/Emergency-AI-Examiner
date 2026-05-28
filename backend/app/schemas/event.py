@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 from pydantic import BaseModel
 
 
@@ -15,4 +17,4 @@ class EventResponse(BaseModel):
 
 
 class TimelineResponse(BaseModel):
-    events: list[EventResponse]
+    events: Sequence[EventResponse]

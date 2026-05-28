@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from datetime import datetime
 
 from pydantic import BaseModel
@@ -34,5 +35,5 @@ class ExamUploadResponse(BaseModel):
 
 
 class ExamListResponse(BaseModel):
-    items: list[ExamResponse]
+    items: Sequence[ExamResponse]
     total: int
