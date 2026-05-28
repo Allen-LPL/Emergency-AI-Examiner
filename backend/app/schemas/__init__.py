@@ -6,12 +6,8 @@ from backend.app.schemas.exam import (
     ExamUploadResponse,
 )
 from backend.app.schemas.score import PhaseScore, ScoreItemResponse, ScoreResultResponse
-from backend.app.schemas.user import Token, UserCreate, UserResponse
 
 __all__ = [
-    "UserCreate",
-    "UserResponse",
-    "Token",
     "ExamResponse",
     "ExamStatusResponse",
     "ExamUploadResponse",
