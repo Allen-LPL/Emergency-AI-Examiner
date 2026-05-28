@@ -24,8 +24,8 @@ class CprMetrics(Base):
     press_total: Mapped[int] = mapped_column(Integer, default=0)
     press_correct: Mapped[int] = mapped_column(Integer, default=0)
     press_wrong: Mapped[int] = mapped_column(Integer, default=0)
-    press_frequency: Mapped[float] = mapped_column(Float, default=0.0)
-    press_avg_depth: Mapped[float] = mapped_column(Float, default=0.0)
+    press_frequency: Mapped[float] = mapped_column(Float, default=0.0)  # 按压频率 (次/分钟)
+    press_avg_depth: Mapped[float] = mapped_column(Float, default=0.0)  # 平均按压深度 (mm)
 
     # 按压错误分布
     press_too_deep: Mapped[int] = mapped_column(Integer, default=0)
@@ -39,7 +39,7 @@ class CprMetrics(Base):
     blow_total: Mapped[int] = mapped_column(Integer, default=0)
     blow_correct: Mapped[int] = mapped_column(Integer, default=0)
     blow_wrong: Mapped[int] = mapped_column(Integer, default=0)
-    blow_avg_volume: Mapped[float | None] = mapped_column(Float, nullable=True)
+    blow_avg_volume: Mapped[float | None] = mapped_column(Float, nullable=True)  # 平均通气量 (ml)
 
     # 通气错误分布
     blow_too_much: Mapped[int] = mapped_column(Integer, default=0)
