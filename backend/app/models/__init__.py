@@ -1,7 +1,7 @@
+from backend.app.models.cpr_metrics import CprMetrics
 from backend.app.models.event import ExamEvent
 from backend.app.models.exam import Exam
 from backend.app.models.score import ExamScore
-from backend.app.models.sensor import SensorData
 from backend.app.models.transcript import ExamTranscript, SpeakerRoleMap
 from backend.app.models.user import User
 
@@ -10,7 +10,7 @@ __all__ = [
     "Exam",
     "ExamEvent",
     "ExamScore",
-    "SensorData",
+    "CprMetrics",
     "ExamTranscript",
     "SpeakerRoleMap",
 ]
