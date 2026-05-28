@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.app.api.v1.router import api_v1_router
 from backend.app.config import settings
 from backend.app.database import Base, async_engine
-from backend.app.models import Exam, ExamEvent, ExamScore, User  # noqa: F401
+from backend.app.models import CprMetrics, Exam, ExamEvent, ExamScore  # noqa: F401
 
 
 @asynccontextmanager
