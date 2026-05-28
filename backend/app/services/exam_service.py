@@ -2,16 +2,23 @@ from collections import defaultdict
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
+from backend.app.models.cpr_metrics import CprMetrics
 from backend.app.models.event import ExamEvent
 from backend.app.models.exam import Exam
 from backend.app.models.score import ExamScore
+from backend.app.schemas.cpr_metrics import CprMetricsUpload, derive_scoring_metrics
 from backend.app.schemas.score import PhaseScore
 
 
-async def create_exam(db: AsyncSession, user_id: int, video_path: str) -> Exam:
-    exam = Exam(user_id=user_id, video_url=video_path, status="pending")
+async def create_exam(db: AsyncSession, device_code: str, video_path: str) -> Exam:
+    """创建考试记录 - 以设备码作为归属键, user_id 设备直连场景留空"""
+    exam = Exam(
+        device_code=device_code,
+        user_id=None,
+        video_url=video_path,
+        status="pending",
+    )
     db.add(exam)
     await db.flush()
     await db.refresh(exam)
@@ -32,6 +39,42 @@ async def update_exam_status(
         if task_id:
             exam.task_id = task_id
         await db.flush()
+
+
+async def upsert_cpr_metrics(
+    db: AsyncSession,
+    exam_id: int,
+    device_code: str,
+    payload: CprMetricsUpload,
+) -> CprMetrics:
+    """插入或更新 CPR 指标行 - 同时落原始计数与派生指标"""
+    derived = derive_scoring_metrics(payload)
+    existing = await db.execute(
+        select(CprMetrics).where(CprMetrics.exam_id == exam_id)
+    )
+    row = existing.scalar_one_or_none()
+
+    data = payload.model_dump()
+    data.update(derived)
+    data["device_code"] = device_code
+
+    if row:
+        for field, value in data.items():
+            setattr(row, field, value)
+    else:
+        row = CprMetrics(exam_id=exam_id, **data)
+        db.add(row)
+
+    await db.flush()
+    await db.refresh(row)
+    return row
+
+
+async def get_cpr_metrics(db: AsyncSession, exam_id: int) -> CprMetrics | None:
+    result = await db.execute(
+        select(CprMetrics).where(CprMetrics.exam_id == exam_id)
+    )
+    return result.scalar_one_or_none()
 
 
 async def get_exam_result(db: AsyncSession, exam_id: int) -> dict:
@@ -69,17 +112,20 @@ async def get_exam_timeline(db: AsyncSession, exam_id: int) -> list[ExamEvent]:
     return list(result.scalars().all())
 
 
-async def list_user_exams(
-    db: AsyncSession, user_id: int, skip: int = 0, limit: int = 20
+async def list_exams_by_device(
+    db: AsyncSession, device_code: str, skip: int = 0, limit: int = 20
 ) -> tuple[list[Exam], int]:
+    """按设备码分页查询考试记录"""
     count_result = await db.execute(
-        select(func.count()).select_from(Exam).where(Exam.user_id == user_id)
+        select(func.count())
+        .select_from(Exam)
+        .where(Exam.device_code == device_code)
     )
     total = count_result.scalar() or 0
 
     result = await db.execute(
         select(Exam)
-        .where(Exam.user_id == user_id)
+        .where(Exam.device_code == device_code)
         .order_by(Exam.created_at.desc())
         .offset(skip)
         .limit(limit)
