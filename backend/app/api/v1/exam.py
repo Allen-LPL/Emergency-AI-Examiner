@@ -156,17 +156,24 @@ async def mock_upload(
     if perfect:
         metrics_dict = dict(PERFECT_MOCK_METRICS)
     else:
+        # 先生成总数, 再从中拆分正确/错误数 - 保证 correct + wrong <= total
+        press_total = random.randint(100, 250)
+        press_correct = random.randint(int(press_total * 0.7), press_total)
+        press_wrong = press_total - press_correct
+        blow_total = random.randint(10, 30)
+        blow_correct = random.randint(int(blow_total * 0.7), blow_total)
+        blow_wrong = blow_total - blow_correct
         metrics_dict = {
             "session_duration_sec": round(random.uniform(120, 240), 1),
             "compression_duration_sec": round(random.uniform(80, 180), 1),
-            "press_total": random.randint(100, 250),
-            "press_correct": random.randint(70, 230),
-            "press_wrong": random.randint(0, 30),
+            "press_total": press_total,
+            "press_correct": press_correct,
+            "press_wrong": press_wrong,
             "press_frequency": round(random.uniform(100, 120), 1),
             "press_avg_depth": round(random.uniform(45, 55), 1),
-            "blow_total": random.randint(10, 30),
-            "blow_correct": random.randint(7, 28),
-            "blow_wrong": random.randint(0, 5),
+            "blow_total": blow_total,
+            "blow_correct": blow_correct,
+            "blow_wrong": blow_wrong,
             "blow_avg_volume": round(random.uniform(400, 600), 1),
             "shoulder_tapped": True,
         }
