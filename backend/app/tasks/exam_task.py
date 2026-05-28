@@ -76,18 +76,26 @@ def process_exam_task(self, exam_id: int, video_path: str):
                 },
             )
 
-        # 查询关联的传感器数据 (CPR 模拟人数据, 可选)
-        from backend.app.models.sensor import SensorData
+        # 查询关联的 CPR 指标 (设备上报, 可选)
+        from backend.app.models.cpr_metrics import CprMetrics
 
-        sensor_row = db.query(SensorData).filter(SensorData.exam_id == exam_id).first()
+        metrics_row = (
+            db.query(CprMetrics).filter(CprMetrics.exam_id == exam_id).first()
+        )
         sensor_dict = None
-        if sensor_row:
+        if metrics_row:
             sensor_dict = {
-                "compression_compliance_rate": sensor_row.compression_compliance_rate,
-                "ventilation_compliance_rate": sensor_row.ventilation_compliance_rate,
-                "ccf_percentage": sensor_row.ccf_percentage,
+                # 派生指标 - 现有评分规则消费
+                "compression_compliance_rate": metrics_row.compression_compliance_rate,
+                "ventilation_compliance_rate": metrics_row.ventilation_compliance_rate,
+                "ccf_percentage": metrics_row.ccf_percentage,
+                # 原始计数透传 - 后续若新增更细粒度评分规则可直接使用
+                "press_total": metrics_row.press_total,
+                "press_correct": metrics_row.press_correct,
+                "blow_total": metrics_row.blow_total,
+                "blow_correct": metrics_row.blow_correct,
             }
-            logger.info(f"[考试 {exam_id}] 已加载传感器数据: {sensor_dict}")
+            logger.info(f"[考试 {exam_id}] 已加载 CPR 指标: {sensor_dict}")
 
         # 执行 AI 分析管线 (视频分析 + 音频分析 + 融合评分 + 标注视频生成)
         logger.info(f"[考试 {exam_id}] 启动 AI 流水线")
