@@ -94,9 +94,14 @@ export const getExamDebugData = async (id: number): Promise<ExamDebugData | null
   }
 }
 
-export const getExams = async (page = 1, pageSize = 10): Promise<{ items: Exam[]; total: number }> => {
+export const getExams = async (
+  page = 1,
+  pageSize = 10,
+  deviceCode: string = DEFAULT_DEVICE_CODE,
+): Promise<{ items: Exam[]; total: number }> => {
+  // 后端使用 snake_case 查询参数, 且 device_code 为必传
   const response = await api.get<{ items: Exam[]; total: number }>('/exams', {
-    params: { page, pageSize },
+    params: { page, page_size: pageSize, device_code: deviceCode },
   })
   return response.data
 }
