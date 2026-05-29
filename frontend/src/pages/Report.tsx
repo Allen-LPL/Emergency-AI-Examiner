@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Button, Spin, Result, Collapse, Table, Tag, Card } from 'antd';
-import { ArrowLeftOutlined, VideoCameraOutlined, CheckCircleOutlined, CloseCircleOutlined, WarningOutlined } from '@ant-design/icons';
-import { getExamResult } from '../api';
+import { Button, Spin, Result, Collapse, Table, Tag, Card, message } from 'antd';
+import { ArrowLeftOutlined, VideoCameraOutlined, CheckCircleOutlined, CloseCircleOutlined, WarningOutlined, FilePdfOutlined } from '@ant-design/icons';
+import { downloadExamReportPdf, getExamResult } from '../api';
 import type { ScoreResult } from '../types';
 import RadarChart from '../components/RadarChart';
 
@@ -27,6 +27,21 @@ const Report: React.FC = () => {
   
   const [result, setResult] = useState<ScoreResult | null>(null);
   const [loading, setLoading] = useState(true);
+  const [downloading, setDownloading] = useState(false);
+
+  const handleDownloadPdf = async () => {
+    if (!examId) return;
+    setDownloading(true);
+    try {
+      await downloadExamReportPdf(examId);
+      message.success('PDF 报告已开始下载');
+    } catch (error) {
+      console.error('下载 PDF 失败:', error);
+      message.error('下载 PDF 失败，请稍后重试');
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   useEffect(() => {
     const fetchResult = async () => {
@@ -137,9 +152,18 @@ const Report: React.FC = () => {
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(`/exam/${examId}`)}>返回详情</Button>
           <h2 className="text-2xl font-bold m-0 text-gray-800">考核分析报告</h2>
         </div>
-        <Button type="primary" icon={<VideoCameraOutlined />} onClick={() => navigate('/')}>
-          返回首页
-        </Button>
+        <div className="flex items-center gap-3">
+          <Button
+            icon={<FilePdfOutlined />}
+            onClick={handleDownloadPdf}
+            loading={downloading}
+          >
+            下载 PDF
+          </Button>
+          <Button type="primary" icon={<VideoCameraOutlined />} onClick={() => navigate('/')}>
+            返回首页
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

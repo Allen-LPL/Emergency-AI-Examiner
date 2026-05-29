@@ -85,6 +85,35 @@ export const generateMockSensor = async (id: number): Promise<SensorData> => {
   return response.data
 }
 
+// 下载考核结果 PDF - 后端返回 application/pdf 二进制流
+export const downloadExamReportPdf = async (id: number): Promise<void> => {
+  const response = await api.get(`/exam/${id}/report/pdf`, {
+    responseType: 'blob',
+  })
+
+  // 优先从 Content-Disposition 取文件名 (RFC 5987 UTF-8 编码)
+  const disposition = response.headers['content-disposition'] || ''
+  let filename = `院外心脏骤停急救考核评分表_${id}.pdf`
+  const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(disposition)
+  if (utf8Match) {
+    try {
+      filename = decodeURIComponent(utf8Match[1])
+    } catch {
+      // 解码失败时退回默认中文名
+    }
+  }
+
+  const blob = new Blob([response.data], { type: 'application/pdf' })
+  const url = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  window.URL.revokeObjectURL(url)
+}
+
 export const getExamDebugData = async (id: number): Promise<ExamDebugData | null> => {
   try {
     const response = await api.get<ExamDebugData>(`/exam/${id}/debug`)

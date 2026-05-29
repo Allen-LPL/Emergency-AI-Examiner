@@ -13,7 +13,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from loguru import logger
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -401,6 +401,51 @@ async def get_exam_report(exam_id: int, db: AsyncSession = Depends(get_async_db)
     )
 
     return HTMLResponse(content=html)
+
+
+@router.get("/{exam_id}/report/pdf")
+async def get_exam_report_pdf(exam_id: int, db: AsyncSession = Depends(get_async_db)):
+    """下载 PDF 格式的考核评分报告 - 结构对齐院外心脏骤停急救考核评分表。"""
+    exam = await exam_service.get_exam(db, exam_id)
+    if not exam:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="考试记录不存在"
+        )
+    if exam.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="考试尚未完成评分"
+        )
+
+    from urllib.parse import quote
+
+    from backend.app.services.report_service import generate_pdf_report
+
+    score_data = await exam_service.get_exam_result(db, exam_id)
+    try:
+        pdf_bytes = generate_pdf_report(
+            exam_id=exam_id,
+            score_result=score_data,
+            created_at=str(exam.created_at),
+        )
+    except RuntimeError as exc:
+        logger.error(f"[报告] PDF 生成失败: exam_id={exam_id}, err={exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"PDF 生成失败: {exc}",
+        ) from exc
+
+    filename = f"院外心脏骤停急救考核评分表_{exam_id}.pdf"
+    # RFC 5987 - 同时给出 ASCII fallback 与 UTF-8 文件名，确保各浏览器中文不乱码
+    ascii_fallback = f"exam_{exam_id}_report.pdf"
+    content_disposition = (
+        f'attachment; filename="{ascii_fallback}"; '
+        f"filename*=UTF-8''{quote(filename)}"
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": content_disposition},
+    )
 
 
 @router.get("s", response_model=ExamListResponse)
