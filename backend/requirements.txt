@@ -25,6 +25,8 @@ pydantic-settings==2.5.2
 # Report Generation
 jinja2==3.1.4
 weasyprint==62.3
+# weasyprint 62.3 调 pydyf.Stream.transform, 0.11 起方法被移除, 必须锁旧版
+pydyf==0.10.0
 
 # Utilities
 python-dotenv==1.0.1
