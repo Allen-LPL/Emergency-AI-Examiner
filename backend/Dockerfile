@@ -3,7 +3,10 @@ FROM python:3.11-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq-dev gcc && \
+    libpq-dev gcc \
+    # weasyprint 运行依赖 (pango / cairo / gobject) 及中文字体
+    libpango-1.0-0 libpangoft2-1.0-0 libcairo2 libgdk-pixbuf-2.0-0 \
+    libffi-dev shared-mime-info fonts-noto-cjk fonts-noto-color-emoji && \
     rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt .
