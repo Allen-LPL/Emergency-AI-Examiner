@@ -13,9 +13,36 @@ api.interceptors.request.use((config) => {
   return config
 })
 
-export const uploadExam = async (file: File): Promise<{ exam_id: number; task_id: string }> => {
+// 默认设备码 - 页面上传时若未指定, 统一使用此值
+const DEFAULT_DEVICE_CODE = '8888888'
+
+// 满分 CPR 指标 - 与后端 PERFECT_MOCK_METRICS 保持一致
+const PERFECT_METRICS = {
+  session_duration_sec: 180.0,
+  compression_duration_sec: 150.0,
+  press_total: 200,
+  press_correct: 190,
+  press_wrong: 10,
+  press_frequency: 110.0,
+  press_avg_depth: 52.0,
+  blow_total: 20,
+  blow_correct: 19,
+  blow_wrong: 1,
+  blow_avg_volume: 540.0,
+  shoulder_tapped: true,
+}
+
+export const uploadExam = async (
+  file: File,
+  deviceCode: string = DEFAULT_DEVICE_CODE,
+  metrics: Record<string, unknown> | null = PERFECT_METRICS,
+): Promise<{ exam_id: number; task_id: string }> => {
   const formData = new FormData()
   formData.append('file', file)
+  formData.append('device_code', deviceCode)
+  if (metrics) {
+    formData.append('metrics', JSON.stringify(metrics))
+  }
   const response = await api.post<{ exam_id: number; task_id: string }>('/exam/upload', formData, {
     headers: {
       'Content-Type': 'multipart/form-data',
