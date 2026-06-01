@@ -113,22 +113,27 @@ async def get_exam_timeline(db: AsyncSession, exam_id: int) -> list[ExamEvent]:
 
 
 async def list_exams_by_device(
-    db: AsyncSession, device_code: str, skip: int = 0, limit: int = 20
+    db: AsyncSession,
+    device_code: str | None,
+    skip: int = 0,
+    limit: int = 20,
 ) -> tuple[list[Exam], int]:
-    """按设备码分页查询考试记录"""
-    count_result = await db.execute(
-        select(func.count())
-        .select_from(Exam)
-        .where(Exam.device_code == device_code)
-    )
+    """分页查询考试记录.
+
+    - device_code 为非空字符串时, 仅返回该设备的记录 (老调用兼容)
+    - device_code 为 None 或空串时, 返回所有设备的记录 (历史考核记录页面默认行为)
+    """
+    base = select(Exam)
+    count_base = select(func.count()).select_from(Exam)
+    if device_code:
+        base = base.where(Exam.device_code == device_code)
+        count_base = count_base.where(Exam.device_code == device_code)
+
+    count_result = await db.execute(count_base)
     total = count_result.scalar() or 0
 
     result = await db.execute(
-        select(Exam)
-        .where(Exam.device_code == device_code)
-        .order_by(Exam.created_at.desc())
-        .offset(skip)
-        .limit(limit)
+        base.order_by(Exam.created_at.desc()).offset(skip).limit(limit)
     )
     return list(result.scalars().all()), total
 

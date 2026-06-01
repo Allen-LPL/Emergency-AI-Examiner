@@ -126,11 +126,16 @@ export const getExamDebugData = async (id: number): Promise<ExamDebugData | null
 export const getExams = async (
   page = 1,
   pageSize = 10,
-  deviceCode: string = DEFAULT_DEVICE_CODE,
+  deviceCode?: string,
 ): Promise<{ items: Exam[]; total: number }> => {
-  // 后端使用 snake_case 查询参数, 且 device_code 为必传
+  // 历史考核记录页面默认列出所有设备的记录, 因此不再强制传 device_code
+  // 传了 deviceCode 时仅过滤该设备的数据 (兼容按设备筛选场景)
+  const params: Record<string, unknown> = { page, page_size: pageSize }
+  if (deviceCode) {
+    params.device_code = deviceCode
+  }
   const response = await api.get<{ items: Exam[]; total: number }>('/exams', {
-    params: { page, page_size: pageSize, device_code: deviceCode },
+    params,
   })
   return response.data
 }

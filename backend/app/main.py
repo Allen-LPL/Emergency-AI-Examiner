@@ -4,11 +4,19 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from loguru import logger
+from sqlalchemy import text
 
 from backend.app.api.v1.router import api_v1_router
 from backend.app.config import settings
 from backend.app.database import Base, async_engine
 from backend.app.models import CprMetrics, Exam, ExamEvent, ExamScore  # noqa: F401
+
+# 启动时需要补齐的列 (幂等 ALTER TABLE IF NOT EXISTS, 兼容已有部署)
+# create_all 只能建表, 无法为已存在表追加列, 这里集中收口存量库的小迁移
+_BOOTSTRAP_COLUMN_MIGRATIONS: list[str] = [
+    "ALTER TABLE exams ADD COLUMN IF NOT EXISTS report_pdf_url VARCHAR(500)",
+]
 
 
 @asynccontextmanager
@@ -19,6 +27,14 @@ async def lifespan(app: FastAPI):
 
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # 幂等执行存量库的列补齐, 避免老库少字段导致 SELECT 报 UndefinedColumn
+        for ddl in _BOOTSTRAP_COLUMN_MIGRATIONS:
+            try:
+                await conn.execute(text(ddl))
+                logger.info(f"[启动] 列迁移执行成功: {ddl}")
+            except Exception as exc:
+                # IF NOT EXISTS 已保证幂等, 这里仅兜底打印不阻塞启动
+                logger.warning(f"[启动] 列迁移执行失败 (已忽略, 不影响启动): {ddl} | {exc}")
 
     yield
     await async_engine.dispose()

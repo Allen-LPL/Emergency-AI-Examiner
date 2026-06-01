@@ -610,12 +610,20 @@ async def get_exam_report_pdf(exam_id: int, db: AsyncSession = Depends(get_async
 
 @router.get("s", response_model=ExamListResponse)
 async def list_exams(
-    device_code: str = Query(..., min_length=1, max_length=64),
+    device_code: str | None = Query(
+        default=None,
+        max_length=64,
+        description="设备码过滤; 留空则返回所有设备的考核记录 (历史考核记录页面默认行为)",
+    ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     db: AsyncSession = Depends(get_async_db),
 ):
-    """按设备码分页获取考试记录列表。"""
+    """分页获取考试记录列表.
+
+    - 不传 device_code: 列出所有设备的考核记录 (历史考核记录页面)
+    - 传 device_code: 仅列出该设备的记录 (兼容老调用)
+    """
     skip = (page - 1) * page_size
     items, total = await exam_service.list_exams_by_device(
         db, device_code, skip, page_size
