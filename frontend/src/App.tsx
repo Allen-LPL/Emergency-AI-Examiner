@@ -6,7 +6,7 @@ import Layout from './components/Layout'
 import Home from './pages/Home'
 import ExamDetail from './pages/ExamDetail'
 import Report from './pages/Report'
-import Login from './pages/Login'
+// 临时去除登录注册：保留 Login 组件以便后续恢复，仅暂停其路由
 
 const App: React.FC = () => {
   return (
@@ -21,7 +21,8 @@ const App: React.FC = () => {
     >
       <BrowserRouter>
         <Routes>
-          <Route path="/login" element={<Login />} />
+          {/* 临时去除登录注册：/login 直接重定向到首页 */}
+          <Route path="/login" element={<Navigate to="/" replace />} />
           <Route path="/" element={<Layout />}>
             <Route index element={<Home />} />
             <Route path="exam/:id" element={<ExamDetail />} />

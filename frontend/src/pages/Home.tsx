@@ -1,26 +1,21 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
 import { Upload, Table, Tag, Button, message, Progress } from 'antd'
 import { InboxOutlined, EyeOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { getExams, uploadExam } from '../api'
 import type { Exam } from '../types'
 import { usePolling } from '../hooks/usePolling'
-import { useAuth } from '../hooks/useAuth'
 
 const { Dragger } = Upload
 
 const Home: React.FC = () => {
   const navigate = useNavigate()
-  const { requireAuth } = useAuth()
   const [exams, setExams] = useState<Exam[]>([])
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
 
-  useEffect(() => {
-    requireAuth()
-  }, [requireAuth])
-
+  // 临时去除登录注册：不再调用 requireAuth 强制跳转到登录页
   const fetchExams = async () => {
     try {
       const data = await getExams(1, 50)

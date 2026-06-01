@@ -10,10 +10,11 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
+    Request,
     UploadFile,
     status,
 )
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from loguru import logger
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +40,18 @@ router = APIRouter(prefix="/exam", tags=["考试"])
 
 # 允许上传的视频文件扩展名
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+
+# 视频文件扩展名 → Content-Type 映射 (H5 <video> 播放接口使用)
+VIDEO_CONTENT_TYPE_MAP = {
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".mkv": "video/x-matroska",
+    ".avi": "video/x-msvideo",
+}
+
+# 视频流式播放分块大小 (64KB) - 兼顾 TCP 段大小与内存占用
+_VIDEO_STREAM_CHUNK = 64 * 1024
 
 # 满分 mock 指标 - 客观评分 40/40
 PERFECT_MOCK_METRICS = {
@@ -316,6 +329,153 @@ async def get_exam_processed_video(
         path=str(video_path),
         media_type="video/mp4",
         filename=f"exam_{exam_id}_annotated.mp4",
+    )
+
+
+def _parse_range_header(range_header: str, file_size: int) -> tuple[int, int] | None:
+    """解析单段 HTTP Range 请求头, 返回 (start, end). 不合法返回 None.
+
+    支持的形式:
+        Range: bytes=START-END     -> (START, END)
+        Range: bytes=START-        -> (START, file_size - 1)
+        Range: bytes=-SUFFIX       -> (file_size - SUFFIX, file_size - 1)
+    多段 range (bytes=a-b,c-d) 不支持 - H5 <video> 标签不会发送, 直接判非法
+    """
+    if not range_header or not range_header.lower().startswith("bytes="):
+        return None
+    spec = range_header[len("bytes="):].strip()
+    if "," in spec:
+        return None  # 不支持 multipart range
+    if "-" not in spec:
+        return None
+    start_str, end_str = spec.split("-", 1)
+    start_str = start_str.strip()
+    end_str = end_str.strip()
+
+    try:
+        if start_str == "":
+            # 后缀 range: 取末尾 N 字节
+            if end_str == "":
+                return None
+            suffix = int(end_str)
+            if suffix <= 0:
+                return None
+            start = max(file_size - suffix, 0)
+            end = file_size - 1
+        else:
+            start = int(start_str)
+            end = int(end_str) if end_str else file_size - 1
+    except ValueError:
+        return None
+
+    if start < 0 or end < start or start >= file_size:
+        return None
+    end = min(end, file_size - 1)
+    return start, end
+
+
+def _iter_video_chunks(file_path: Path, start: int, end: int):
+    """流式按块读取文件区间 [start, end] (闭区间), 用于 StreamingResponse 出参"""
+    remaining = end - start + 1
+    with open(file_path, "rb") as f:
+        f.seek(start)
+        while remaining > 0:
+            read_size = min(_VIDEO_STREAM_CHUNK, remaining)
+            data = f.read(read_size)
+            if not data:
+                break
+            remaining -= len(data)
+            yield data
+
+
+@router.get("/{exam_id}/video/play")
+async def play_exam_video(
+    exam_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_async_db),
+):
+    """按 exam.video_url 提供原始上传视频的 HTTP Range 流式播放接口.
+
+    专为常规 H5 <video> 标签设计: 支持拖动进度条(Range)、不缓存(考试视频).
+    与 /exam/{exam_id}/video 区分: 后者返回 AI 标注后的视频, 此接口返回原始视频.
+    """
+    exam = await exam_service.get_exam(db, exam_id)
+    if not exam:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="考试记录不存在"
+        )
+    if not exam.video_url:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="该考试无原始视频路径"
+        )
+
+    # 数据库里既可能是绝对路径, 也可能是历史相对路径 (相对 upload_dir)
+    raw_path = Path(exam.video_url)
+    if raw_path.is_absolute():
+        video_path = raw_path
+    else:
+        video_path = (Path(settings.upload_dir) / raw_path).resolve()
+
+    if not video_path.exists() or not video_path.is_file():
+        logger.warning(
+            f"[播放] 原始视频文件不存在: db={exam.video_url}, resolved={video_path}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"原始视频文件未找到: {video_path.name}",
+        )
+
+    file_size = video_path.stat().st_size
+    ext = video_path.suffix.lower()
+    content_type = VIDEO_CONTENT_TYPE_MAP.get(ext, "application/octet-stream")
+
+    # 通用响应头: H5 浏览器需要 Accept-Ranges 才会启用 Range 请求, 否则只能从头播
+    common_headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": "inline",
+        "Cache-Control": "no-cache",
+    }
+
+    range_header = request.headers.get("range") or request.headers.get("Range")
+    if not range_header:
+        # 无 Range: 整体返回 200, 仍然带 Accept-Ranges 让浏览器后续可发 Range
+        logger.debug(
+            f"[播放] 整段返回: exam_id={exam_id}, path={video_path}, size={file_size}"
+        )
+        common_headers["Content-Length"] = str(file_size)
+        return StreamingResponse(
+            _iter_video_chunks(video_path, 0, file_size - 1),
+            media_type=content_type,
+            headers=common_headers,
+        )
+
+    parsed = _parse_range_header(range_header, file_size)
+    if parsed is None:
+        # 非法 Range -> 416, 按 RFC 7233 给出 Content-Range: bytes */<size>
+        logger.warning(
+            f"[播放] 非法 Range 头: exam_id={exam_id}, range={range_header!r}, "
+            f"size={file_size}"
+        )
+        return Response(
+            status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+            headers={
+                "Content-Range": f"bytes */{file_size}",
+                "Accept-Ranges": "bytes",
+            },
+        )
+
+    start, end = parsed
+    chunk_size = end - start + 1
+    common_headers["Content-Length"] = str(chunk_size)
+    common_headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+    logger.debug(
+        f"[播放] Range 分段返回: exam_id={exam_id}, range=bytes {start}-{end}/{file_size}"
+    )
+    return StreamingResponse(
+        _iter_video_chunks(video_path, start, end),
+        status_code=status.HTTP_206_PARTIAL_CONTENT,
+        media_type=content_type,
+        headers=common_headers,
     )
 
 

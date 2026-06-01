@@ -23,6 +23,8 @@ class Exam(Base):
     audio_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # AI 标注后的视频路径(含姿态骨架、关键点、动作标签、语音字幕)
     processed_video_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # AI 生成的 PDF 评分报告路径(绝对路径), 由 Celery 任务在评分完成后落盘
+    report_pdf_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
     total_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

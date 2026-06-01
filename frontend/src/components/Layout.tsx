@@ -1,20 +1,15 @@
 import React from 'react'
-import { Layout as AntLayout, Menu, Button } from 'antd'
+import { Layout as AntLayout, Menu } from 'antd'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
-import { VideoCameraOutlined, HomeOutlined, UserOutlined } from '@ant-design/icons'
+import { VideoCameraOutlined, HomeOutlined } from '@ant-design/icons'
 
 const { Header, Content, Footer } = AntLayout
 
 const Layout: React.FC = () => {
   const navigate = useNavigate()
   const location = useLocation()
-  const token = localStorage.getItem('token')
 
-  const handleLogout = () => {
-    localStorage.removeItem('token')
-    navigate('/login')
-  }
-
+  // 临时去除登录注册：隐藏登录/退出按钮，仅保留主导航
   const menuItems = [
     {
       key: '/',
@@ -30,7 +25,7 @@ const Layout: React.FC = () => {
           <VideoCameraOutlined className="text-blue-600 text-2xl" />
           <span className="text-xl font-bold text-gray-800">急救AI考官系统</span>
         </div>
-        
+
         <div className="flex items-center gap-6">
           <Menu
             mode="horizontal"
@@ -39,16 +34,6 @@ const Layout: React.FC = () => {
             onClick={({ key }) => navigate(key)}
             className="border-none min-w-[200px]"
           />
-          
-          {token ? (
-            <Button type="text" icon={<UserOutlined />} onClick={handleLogout}>
-              退出登录
-            </Button>
-          ) : (
-            <Button type="primary" onClick={() => navigate('/login')}>
-              登录
-            </Button>
-          )}
         </div>
       </Header>
       

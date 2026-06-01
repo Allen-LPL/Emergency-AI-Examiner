@@ -146,6 +146,32 @@ def process_exam_task(self, exam_id: int, video_path: str):
             f"total_score={score_result.get('total_score', 0.0)}"
         )
 
+        # 生成 PDF 评分报告并落盘 (副产物失败不阻塞主流程, 仅记录堆栈)
+        # 复用 backend.app.services.report_service.generate_pdf_report 同一份渲染逻辑,
+        # 写入路径与标注视频同目录, 入库为绝对路径方便跨容器寻址
+        try:
+            from backend.app.config import settings as _settings
+            from backend.app.services.report_service import generate_pdf_report
+
+            pdf_bytes = generate_pdf_report(
+                exam_id=exam_id,
+                score_result=score_result,
+                created_at=str(exam.created_at),
+            )
+            pdf_output_dir = Path(_settings.output_dir).resolve()
+            pdf_output_dir.mkdir(parents=True, exist_ok=True)
+            pdf_path = pdf_output_dir / f"exam_{exam_id}_report.pdf"
+            pdf_path.write_bytes(pdf_bytes)
+            exam.report_pdf_url = str(pdf_path)
+            logger.info(
+                f"[考试 {exam_id}] PDF 报告已生成并入库: path={pdf_path}, "
+                f"size={len(pdf_bytes) / 1024:.1f}KB"
+            )
+        except Exception as exc:
+            logger.exception(
+                f"[考试 {exam_id}] PDF 报告生成失败 (主流程继续, 字段保持 NULL): {exc}"
+            )
+
         # 保存标注视频路径到数据库 (统一入库为绝对路径, 跨容器/跨工作目录可寻址)
         processed_video_path = result.get("processed_video_path", "")
         if processed_video_path:
