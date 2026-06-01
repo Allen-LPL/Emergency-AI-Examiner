@@ -53,6 +53,9 @@ VIDEO_CONTENT_TYPE_MAP = {
 # 视频流式播放分块大小 (64KB) - 兼顾 TCP 段大小与内存占用
 _VIDEO_STREAM_CHUNK = 64 * 1024
 
+# 上传接口 device_code 缺省值 - 当前业务为单池设备直连, 未携带设备码时统一归入此默认值
+DEFAULT_UPLOAD_DEVICE_CODE = "8888888"
+
 # 满分 mock 指标 - 客观评分 40/40
 PERFECT_MOCK_METRICS = {
     "session_duration_sec": 180.0,
@@ -73,7 +76,12 @@ PERFECT_MOCK_METRICS = {
 @router.post("/upload", response_model=ExamUploadResponse)
 async def upload_exam(
     file: UploadFile = File(..., description="考试视频文件"),
-    device_code: str = Form(..., min_length=1, max_length=64, description="设备唯一码"),
+    device_code: str = Form(
+        default=DEFAULT_UPLOAD_DEVICE_CODE,
+        min_length=1,
+        max_length=64,
+        description=f"设备唯一码, 未传时默认 {DEFAULT_UPLOAD_DEVICE_CODE}",
+    ),
     metrics: str | None = Form(default=None, description="CPR 模拟人指标 JSON 字符串"),
     db: AsyncSession = Depends(get_async_db),
 ):
@@ -610,22 +618,14 @@ async def get_exam_report_pdf(exam_id: int, db: AsyncSession = Depends(get_async
 
 @router.get("s", response_model=ExamListResponse)
 async def list_exams(
-    device_code: str | None = Query(
-        default=None,
-        max_length=64,
-        description="设备码过滤; 留空则返回所有设备的考核记录 (历史考核记录页面默认行为)",
-    ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     db: AsyncSession = Depends(get_async_db),
 ):
-    """分页获取考试记录列表.
-
-    - 不传 device_code: 列出所有设备的考核记录 (历史考核记录页面)
-    - 传 device_code: 仅列出该设备的记录 (兼容老调用)
-    """
+    """分页获取考试记录列表 - 历史考核记录页面默认返回所有设备的数据."""
     skip = (page - 1) * page_size
+    # 内部 service 仍保留按设备过滤能力, 这里固定传 None 表示不过滤
     items, total = await exam_service.list_exams_by_device(
-        db, device_code, skip, page_size
+        db, None, skip, page_size
     )
     return ExamListResponse(items=items, total=total)

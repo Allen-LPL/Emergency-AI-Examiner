@@ -126,16 +126,10 @@ export const getExamDebugData = async (id: number): Promise<ExamDebugData | null
 export const getExams = async (
   page = 1,
   pageSize = 10,
-  deviceCode?: string,
 ): Promise<{ items: Exam[]; total: number }> => {
-  // 历史考核记录页面默认列出所有设备的记录, 因此不再强制传 device_code
-  // 传了 deviceCode 时仅过滤该设备的数据 (兼容按设备筛选场景)
-  const params: Record<string, unknown> = { page, page_size: pageSize }
-  if (deviceCode) {
-    params.device_code = deviceCode
-  }
+  // 历史考核记录页面统一返回所有设备的记录, 后端已去除 device_code 入参
   const response = await api.get<{ items: Exam[]; total: number }>('/exams', {
-    params,
+    params: { page, page_size: pageSize },
   })
   return response.data
 }
