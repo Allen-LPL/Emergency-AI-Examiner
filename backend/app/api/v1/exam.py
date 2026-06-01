@@ -571,6 +571,47 @@ async def get_exam_report(exam_id: int, db: AsyncSession = Depends(get_async_db)
     return HTMLResponse(content=html)
 
 
+async def _load_exam_pdf_bytes(exam, exam_id: int, db: AsyncSession) -> bytes:
+    """获取考试 PDF 字节流 - 优先读 worker 已落盘的 PDF, 不存在则现场渲染。
+
+    - exam.report_pdf_url 由 Celery worker 写入 (绝对路径)
+    - 历史数据可能为空或文件已被清理, 此时回退到 generate_pdf_report 实时生成
+    """
+    pdf_url = (exam.report_pdf_url or "").strip()
+    if pdf_url:
+        pdf_path = Path(pdf_url)
+        if pdf_path.is_file():
+            try:
+                return pdf_path.read_bytes()
+            except OSError as exc:
+                logger.warning(
+                    f"[报告] 读取已落盘 PDF 失败, 回退实时生成: "
+                    f"exam_id={exam_id}, path={pdf_path}, err={exc}"
+                )
+        else:
+            logger.warning(
+                f"[报告] PDF 文件不存在, 回退实时生成: "
+                f"exam_id={exam_id}, path={pdf_path}"
+            )
+
+    # 回退路径: 现场渲染
+    from backend.app.services.report_service import generate_pdf_report
+
+    score_data = await exam_service.get_exam_result(db, exam_id)
+    try:
+        return generate_pdf_report(
+            exam_id=exam_id,
+            score_result=score_data,
+            created_at=str(exam.created_at),
+        )
+    except RuntimeError as exc:
+        logger.error(f"[报告] PDF 生成失败: exam_id={exam_id}, err={exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"PDF 生成失败: {exc}",
+        ) from exc
+
+
 @router.get("/{exam_id}/report/pdf")
 async def get_exam_report_pdf(exam_id: int, db: AsyncSession = Depends(get_async_db)):
     """下载 PDF 格式的考核评分报告 - 结构对齐院外心脏骤停急救考核评分表。"""
@@ -586,21 +627,7 @@ async def get_exam_report_pdf(exam_id: int, db: AsyncSession = Depends(get_async
 
     from urllib.parse import quote
 
-    from backend.app.services.report_service import generate_pdf_report
-
-    score_data = await exam_service.get_exam_result(db, exam_id)
-    try:
-        pdf_bytes = generate_pdf_report(
-            exam_id=exam_id,
-            score_result=score_data,
-            created_at=str(exam.created_at),
-        )
-    except RuntimeError as exc:
-        logger.error(f"[报告] PDF 生成失败: exam_id={exam_id}, err={exc}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"PDF 生成失败: {exc}",
-        ) from exc
+    pdf_bytes = await _load_exam_pdf_bytes(exam, exam_id, db)
 
     filename = f"院外心脏骤停急救考核评分表_{exam_id}.pdf"
     # RFC 5987 - 同时给出 ASCII fallback 与 UTF-8 文件名，确保各浏览器中文不乱码
@@ -613,6 +640,47 @@ async def get_exam_report_pdf(exam_id: int, db: AsyncSession = Depends(get_async
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": content_disposition},
+    )
+
+
+@router.get("/{exam_id}/report/pdf/view")
+async def view_exam_report_pdf(
+    exam_id: int, db: AsyncSession = Depends(get_async_db)
+):
+    """浏览器内联查看 PDF 报告 - 与 /report/pdf 共享渲染逻辑, 仅 disposition 不同。
+
+    用途: 远端考核中心 / H5 / 后台管理在 <iframe> 或新标签内直接预览,
+    不触发下载. 浏览器依据 Content-Type 与 Content-Disposition=inline 渲染.
+    """
+    exam = await exam_service.get_exam(db, exam_id)
+    if not exam:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="考试记录不存在"
+        )
+    if exam.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="考试尚未完成评分"
+        )
+
+    from urllib.parse import quote
+
+    pdf_bytes = await _load_exam_pdf_bytes(exam, exam_id, db)
+
+    filename = f"院外心脏骤停急救考核评分表_{exam_id}.pdf"
+    ascii_fallback = f"exam_{exam_id}_report.pdf"
+    # inline + 文件名 - 浏览器内嵌渲染, 用户点击下载时仍能拿到正确文件名
+    content_disposition = (
+        f'inline; filename="{ascii_fallback}"; '
+        f"filename*=UTF-8''{quote(filename)}"
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": content_disposition,
+            # 报告内容随评分而变, 避免浏览器/CDN 缓存到旧版本
+            "Cache-Control": "no-cache",
+        },
     )
 
 
