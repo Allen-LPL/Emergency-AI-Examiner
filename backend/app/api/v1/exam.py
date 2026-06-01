@@ -139,7 +139,6 @@ async def upload_exam(
 
     # 创建考试记录
     exam = await exam_service.create_exam(db, device_code, str(file_path))
-    await db.flush()
 
     # 若有 metrics 一并落库 (派生指标在 service 内计算)
     metrics_received = False
@@ -148,7 +147,13 @@ async def upload_exam(
         metrics_received = True
         logger.info(f"[上传] 已写入 cpr_metrics: exam_id={exam.id}")
 
-    # 派发 Celery 任务
+    # 关键: 必须先 commit 再派发 Celery, 否则 worker 空闲时会在 API 事务提交前
+    # 执行 SELECT 而查不到 exam 行, 报 "数据库未找到考试记录, 任务终止".
+    # 复现: 前序任务长跑结束 worker 转为空闲, 新上传一进队列即被秒抢, BRPOP→SELECT
+    # 仅几毫秒, 早于 get_async_db 在 yield 之后的 commit 窗口.
+    await db.commit()
+
+    # 派发 Celery 任务 - 此时 exam 已落库, worker 端必然可见
     task = process_exam_task.delay(exam.id, str(file_path))
     exam.task_id = task.id
     exam.status = "pending"
