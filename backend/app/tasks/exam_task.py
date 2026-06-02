@@ -1,86 +1,19 @@
-from datetime import datetime
 from pathlib import Path
 
-import httpx
 from loguru import logger
 
-from backend.app.config import settings
 from backend.app.database import get_sync_db
 from backend.app.models.exam import Exam
 from backend.app.services.exam_service import (
     save_exam_events_sync,
     save_exam_scores_sync,
 )
+from backend.app.services.remote_report_service import post_exam_evaluation_sync
 from backend.app.services.transcript_service import (
     dump_audio_timeline_json,
     save_audio_timeline_sync,
 )
 from backend.app.tasks.celery_app import celery_app
-
-
-def _post_remote_evaluation(
-    exam_id: int,
-    device_code: str,
-    total_score: float | None,
-    created_at: datetime | None,
-    session_duration_sec: float | None,
-) -> None:
-    """考试完成后上报远端考核中心 - 失败仅记日志, 不抛异常 (与 PDF 生成同策略).
-
-    远端字段对齐 `evaluation-add` 接口:
-        - terminal_id: 设备软件 ID, 直接透传 device_code (服务端已改为 string)
-        - users_id:    无用户体系, 按 example 留空字符串
-        - score:       得分, 取 total_score 四舍五入为整数
-        - use_at:      用时(秒), 取 cpr_metrics.session_duration_sec; 无指标记 0
-        - video_url:   本服务原始视频流式播放接口完整 URL (供远端 H5 内嵌)
-        - evaluation_at: 考核时间, exam.created_at ISO 8601 字符串
-        - pdf_url:     本服务 PDF 内联查看接口完整 URL (供远端浏览器预览)
-    """
-    base = settings.public_base_url.rstrip("/")
-    payload = {
-        "terminal_id": device_code or "",
-        "users_id": "",
-        "score": int(round(total_score or 0.0)),
-        "use_at": int(session_duration_sec) if session_duration_sec else 0,
-        "video_url": f"{base}/exam/{exam_id}/video/play",
-        "evaluation_at": created_at.isoformat() if created_at else "",
-        "pdf_url": f"{base}/exam/{exam_id}/report/pdf/view",
-    }
-
-    logger.info(
-        f"[考试 {exam_id}] 准备上报远端考核中心: url={settings.remote_eval_report_url}, "
-        f"payload={payload}"
-    )
-
-    try:
-        with httpx.Client(timeout=settings.remote_eval_report_timeout) as client:
-            resp = client.post(
-                settings.remote_eval_report_url,
-                json=payload,
-                headers={
-                    "accept": "application/json",
-                    "Content-Type": "application/json",
-                    "X-CSRF-TOKEN": "",
-                    # 平台分配的 appid/appsecret 拼装而成: base64(APPID:md5(APPSECRET))
-                    "Authorization": settings.remote_eval_authorization,
-                },
-            )
-        # 远端 2xx 视为成功; 4xx/5xx 输出响应体便于排查, 但不影响本地流程
-        if 200 <= resp.status_code < 300:
-            logger.info(
-                f"[考试 {exam_id}] 远端考核中心上报成功: "
-                f"status={resp.status_code}, body={resp.text[:500]}"
-            )
-        else:
-            logger.warning(
-                f"[考试 {exam_id}] 远端考核中心返回非 2xx: "
-                f"status={resp.status_code}, body={resp.text[:500]}"
-            )
-    except Exception as exc:
-        # 网络异常 / 超时 / DNS 失败等 - 完整堆栈输出, 不再向外抛
-        logger.exception(
-            f"[考试 {exam_id}] 远端考核中心上报失败 (本地流程继续): {exc}"
-        )
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
@@ -269,8 +202,13 @@ def process_exam_task(self, exam_id: int, video_path: str):
         db.commit()
 
         # 远端考核中心数据上报 - 必须在 commit 之后, 这样远端拉取本服务回链 URL 时
-        # 数据库已落盘 status=completed; 失败仅记日志, 不影响本地任务结果
-        _post_remote_evaluation(
+        # 数据库已落盘 status=completed; 失败仅记日志, 不影响本地任务结果.
+        # 这里加一行明确的入口日志, 便于在 worker 容器日志里 grep 到调用点是否真的执行到了.
+        logger.info(
+            f"[考试 {exam_id}] 进入远端考核中心上报阶段: "
+            f"device_code={report_device_code}, total_score={report_total_score}"
+        )
+        post_exam_evaluation_sync(
             exam_id=exam_id,
             device_code=report_device_code,
             total_score=report_total_score,
