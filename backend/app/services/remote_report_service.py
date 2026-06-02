@@ -50,6 +50,11 @@ class BatchResult:
     outcomes: list[ReportOutcome] = field(default_factory=list)
 
 
+# 远端 evaluation-add 接口要求的考核日期格式: "YYYY-MM-DD HH:II:SS" (空格分隔, 无微秒).
+# 用 isoformat() 会输出带 'T' 和微秒, 远端会回 PARAM_ERROR "考核日期格式错误".
+_REMOTE_EVAL_DATETIME_FMT = "%Y-%m-%d %H:%M:%S"
+
+
 def build_evaluation_payload(
     exam_id: int,
     device_code: str | None,
@@ -65,7 +70,7 @@ def build_evaluation_payload(
         - score:       得分, 四舍五入为整数
         - use_at:      用时(秒), 取 cpr_metrics.session_duration_sec, 无指标记 0
         - video_url:   本服务原始视频流式播放接口完整 URL (远端 H5 内嵌)
-        - evaluation_at: 考核时间 ISO 8601 字符串
+        - evaluation_at: 考核时间, 格式 "YYYY-MM-DD HH:II:SS" (远端强校验)
         - pdf_url:     本服务 PDF 内联查看接口完整 URL (远端浏览器预览)
     """
     base = settings.public_base_url.rstrip("/")
@@ -75,7 +80,9 @@ def build_evaluation_payload(
         "score": int(round(total_score or 0.0)),
         "use_at": int(session_duration_sec) if session_duration_sec else 0,
         "video_url": f"{base}/exam/{exam_id}/video/play",
-        "evaluation_at": created_at.isoformat() if created_at else "",
+        "evaluation_at": (
+            created_at.strftime(_REMOTE_EVAL_DATETIME_FMT) if created_at else ""
+        ),
         "pdf_url": f"{base}/exam/{exam_id}/report/pdf/view",
     }
 
