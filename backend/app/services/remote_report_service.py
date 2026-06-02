@@ -54,6 +54,9 @@ class BatchResult:
 # 用 isoformat() 会输出带 'T' 和微秒, 远端会回 PARAM_ERROR "考核日期格式错误".
 _REMOTE_EVAL_DATETIME_FMT = "%Y-%m-%d %H:%M:%S"
 
+# 视频/PDF 回链的路径前缀 - FastAPI 路由挂载在 /api/v1, 不带前缀远端 404
+_PUBLIC_API_PREFIX = "/api/v1"
+
 
 def build_evaluation_payload(
     exam_id: int,
@@ -74,16 +77,17 @@ def build_evaluation_payload(
         - pdf_url:     本服务 PDF 内联查看接口完整 URL (远端浏览器预览)
     """
     base = settings.public_base_url.rstrip("/")
+    api_base = f"{base}{_PUBLIC_API_PREFIX}"
     return {
         "terminal_id": device_code or "",
         "users_id": "",
         "score": int(round(total_score or 0.0)),
         "use_at": int(session_duration_sec) if session_duration_sec else 0,
-        "video_url": f"{base}/exam/{exam_id}/video/play",
+        "video_url": f"{api_base}/exam/{exam_id}/video/play",
         "evaluation_at": (
             created_at.strftime(_REMOTE_EVAL_DATETIME_FMT) if created_at else ""
         ),
-        "pdf_url": f"{base}/exam/{exam_id}/report/pdf/view",
+        "pdf_url": f"{api_base}/exam/{exam_id}/report/pdf/view",
     }
 
 

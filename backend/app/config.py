@@ -39,9 +39,10 @@ class Settings(BaseSettings):
     yolo_model: str = "yolov8n.pt"
     hf_token: str = ""
 
-    # 对外可访问的本服务基础地址 - 用于拼接 video_url / pdf_url 等外部回链
-    # 部署在远端 192.168.31.82:8001 (见 deploy.sh), 上报远端考核中心时拼接完整 URL
-    public_base_url: str = "http://192.168.31.82:8001"
+    # 对外可访问的本服务基础地址 - 用于拼接 video_url / pdf_url 等外部回链.
+    # 远端考核中心 / 公网 H5 只能走公网映射地址 47.97.76.109:17000,
+    # 内网部署机 192.168.31.82:8001 仅本地联调用, 切勿覆盖到此项.
+    public_base_url: str = "http://47.97.76.109:17000"
 
     # 远端考核中心数据上报接口 - 考试评分完成后由 Celery worker 主动上报
     remote_eval_report_url: str = (
