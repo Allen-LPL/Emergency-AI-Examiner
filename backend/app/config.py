@@ -1,3 +1,6 @@
+import base64
+import hashlib
+
 from pydantic_settings import BaseSettings
 from pydantic import Field
 
@@ -45,6 +48,26 @@ class Settings(BaseSettings):
         "https://api.developapi.cn/api/wisdom/cockpit-exam-statistics/evaluation-add"
     )
     remote_eval_report_timeout: float = 10.0
+
+    # 远端考核中心鉴权凭据 - 由平台分配, 上报时拼装为 Authorization 请求头
+    # 算法: base64(APPID:md5(APPSECRET)), 见 remote_eval_authorization 属性
+    remote_eval_appid: str = "developer"
+    remote_eval_appsecret: str = "developer_secret"
+
+    @property
+    def remote_eval_authorization(self) -> str:
+        """远端考核中心 Authorization 请求头值.
+
+        算法 (平台规范):
+            base64(APPID:md5(APPSECRET))
+        例:
+            APPID=developer, APPSECRET=developer_secret
+            -> md5  = b4d4c47a00bcdec1f7963a474bcf3561
+            -> auth = ZGV2ZWxvcGVyOmI0ZDRjNDdhMDBiY2RlYzFmNzk2M2E0NzRiY2YzNTYx
+        """
+        md5_secret = hashlib.md5(self.remote_eval_appsecret.encode("utf-8")).hexdigest()
+        raw = f"{self.remote_eval_appid}:{md5_secret}".encode("utf-8")
+        return base64.b64encode(raw).decode("ascii")
 
     @property
     def async_database_url(self) -> str:

@@ -61,6 +61,8 @@ def _post_remote_evaluation(
                     "accept": "application/json",
                     "Content-Type": "application/json",
                     "X-CSRF-TOKEN": "",
+                    # 平台分配的 appid/appsecret 拼装而成: base64(APPID:md5(APPSECRET))
+                    "Authorization": settings.remote_eval_authorization,
                 },
             )
         # 远端 2xx 视为成功; 4xx/5xx 输出响应体便于排查, 但不影响本地流程
