@@ -9,7 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     add-apt-repository ppa:deadsnakes/ppa && \
     apt-get update && apt-get install -y --no-install-recommends \
     python3.11 python3.11-venv python3.11-dev python3-pip \
-    ffmpeg libsndfile1 libpq-dev gcc libgl1 libglib2.0-0 curl && \
+    ffmpeg libsndfile1 libpq-dev gcc libgl1 libglib2.0-0 curl \
+    # weasyprint 生成 PDF 报告所需中文字体: 缺这两个包, 模板里所有中文 (标题/表头/规则名)
+    # 会因 fontconfig 找不到 CJK 字形而渲染为空, 只剩阿拉伯数字, 见 backend/Dockerfile.
+    fonts-noto-cjk fonts-noto-color-emoji && \
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
     update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 && \
     ln -sf /usr/bin/python3.11 /usr/bin/python && \
