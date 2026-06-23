@@ -141,6 +141,21 @@ git checkout -B "${BRANCH}" "origin/${BRANCH}"
 git reset --hard "origin/${BRANCH}"
 echo "[remote] 远端 HEAD: $(git rev-parse HEAD)"
 
+# DEPLOY_GPU=auto 时做"真探测": 只有 nvidia-smi 真正可用才挂 GPU overlay.
+# 背景: 宿主机驱动损坏 (nvidia-smi 报 Driver/library version mismatch) 或缺
+# nvidia-persistenced socket 时, gpu overlay 的 runtime:nvidia 会让 celery_worker
+# 启动失败. 之前 auto 实为"非 0 即启用", 不做探测, 故驱动一坏 worker 就拉不起来.
+# 现在 auto -> nvidia-smi 成功则 1, 失败则 0 (降级 CPU); 1/0 仍为显式强制.
+if [[ "${DEPLOY_GPU}" == "auto" ]]; then
+  if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+    DEPLOY_GPU=1
+    echo "[remote] GPU 探测: nvidia-smi 正常 -> 启用 GPU overlay"
+  else
+    DEPLOY_GPU=0
+    echo "[remote] GPU 探测: nvidia-smi 不可用 -> 降级 CPU 模式 (跳过 GPU overlay)"
+  fi
+fi
+
 COMPOSE_ARGS=(-f docker-compose.yml)
 if [[ "${DEPLOY_GPU}" != "0" && -f docker-compose.gpu.yml ]]; then
   COMPOSE_ARGS+=(-f docker-compose.gpu.yml)
@@ -178,6 +193,13 @@ if [[ ${TAIL_LOGS} -eq 1 ]]; then
   echo "[deploy] 跟踪 celery_worker / api 日志 (Ctrl+C 退出)..."
   ssh -t "${REMOTE_USER}@${REMOTE_HOST}" \
     "cd ${REMOTE_DIR} && DEPLOY_GPU='${DEPLOY_GPU}' bash -lc '
+      if [[ "\${DEPLOY_GPU}" == "auto" ]]; then
+        if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+          DEPLOY_GPU=1
+        else
+          DEPLOY_GPU=0
+        fi
+      fi
       compose_args=(-f docker-compose.yml)
       if [[ "\${DEPLOY_GPU}" != "0" && -f docker-compose.gpu.yml ]]; then
         compose_args+=(-f docker-compose.gpu.yml)
