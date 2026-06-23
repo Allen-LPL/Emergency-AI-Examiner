@@ -14,6 +14,8 @@ services:
     restart: always
     env_file: .env
     environment:
+      # 时区统一为上海, 与宿主机保持一致 (容器默认 UTC, 会比宿主机慢 8 小时)
+      - TZ=Asia/Shanghai
       - POSTGRES_HOST=db
       - REDIS_HOST=redis
       - CELERY_BROKER_URL=redis://redis:6379/0
@@ -21,9 +23,12 @@ services:
     # 宿主机绑定挂载: 让 api / celery_worker / 宿主机三方共享同一份文件视图
     # uploads/  原始上传视频
     # outputs/  AI 流水线生成的标注视频(姿态骨架/关键点/动作标签/语音字幕)
+    # /etc/localtime + /etc/timezone 只读挂载: 让容器时钟与宿主机上海时区严格一致
     volumes:
       - ./uploads:/app/uploads
       - ./outputs:/app/outputs
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     networks:
       - examiner
 
@@ -47,6 +52,8 @@ services:
     restart: always
     env_file: .env
     environment:
+      # 时区统一为上海, 与宿主机保持一致
+      - TZ=Asia/Shanghai
       - POSTGRES_HOST=db
       - REDIS_HOST=redis
       - CELERY_BROKER_URL=redis://redis:6379/0
@@ -65,6 +72,9 @@ services:
       - ./uploads:/app/uploads
       - ./outputs:/app/outputs
       - model_cache:/root/.cache
+      # /etc/localtime + /etc/timezone 只读挂载: 容器时钟与宿主机上海时区严格一致
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     networks:
       - examiner
 
@@ -74,6 +84,9 @@ services:
     ports:
       - "6379:6379"
     restart: always
+    # alpine 镜像默认 UTC 且无 tzdata, TZ 变量不一定生效, 故再挂载宿主机 /etc/localtime 兜底
+    environment:
+      - TZ=Asia/Shanghai
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -81,6 +94,8 @@ services:
       retries: 5
     volumes:
       - redis_data:/data
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     networks:
       - examiner
 
@@ -89,6 +104,8 @@ services:
     container_name: examiner_db
     restart: unless-stopped
     environment:
+      # 时区统一为上海, 与宿主机保持一致
+      TZ: Asia/Shanghai
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
       POSTGRES_DB: ${POSTGRES_DB:-emergency_examiner}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -101,6 +118,9 @@ services:
       retries: 5
     volumes:
       - db_data:/var/lib/postgresql/data
+      # alpine 镜像无 tzdata, 挂载宿主机 /etc/localtime 兜底
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     networks:
       - examiner
 
@@ -114,6 +134,12 @@ services:
       - "80:80"
     depends_on:
       - api
+    # 时区统一为上海, 与宿主机保持一致
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     networks:
       - examiner
 
@@ -127,8 +153,13 @@ services:
       - redis
       - celery_worker
     environment:
+      # 时区统一为上海, 与宿主机保持一致
+      TZ: Asia/Shanghai
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     networks:
       - examiner
 
@@ -139,6 +170,8 @@ services:
     ports:
       - "9000:9000"
     environment:
+      # 时区统一为上海, 与宿主机保持一致
+      - TZ=Asia/Shanghai
       # CPU 模式下 large-v3 配合 faster_whisper + int8 量化可保证字准率, 5 分钟音频 ~3 分钟出结果.
       # 如需更快可逐级降级 large-v3 → large-v2 → medium, 字准率换速度.
       - ASR_MODEL=large-v3
@@ -157,6 +190,8 @@ services:
       - no_proxy=localhost,127.0.0.1,modelscope.cn,modelscope.com,oss-cn-hangzhou.aliyuncs.com,*.aliyuncs.com,db,redis,api,frontend,examiner_db,examiner_redis,examiner_api,examiner_frontend,funasr,celery_worker,flower
     volumes:
       - /data/sdb/whisper/whisper_models:/root/.cache/whisper
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     restart: unless-stopped
     networks:
       - examiner
@@ -175,10 +210,14 @@ services:
       - /data/sdb/funasr-runtime-resources/models:/workspace/models
       # 启动脚本 mount 进容器, 改名为 start_funasr.sh 避免和镜像内置 /workspace/FunASR/runtime/run_server.sh 重名
       - ./run_server.sh:/start_funasr.sh:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     restart: unless-stopped
     # 首启需要从 modelscope.cn 拉模型. modelscope 在国内, 容器内若 DNS/路由异常仍可能失败,
     # 这里同时提供 v2ray 代理兜底; NO_PROXY 把 modelscope 域名排除以走直连优先.
     environment:
+      # 时区统一为上海, 与宿主机保持一致
+      - TZ=Asia/Shanghai
       - HTTPS_PROXY=http://172.17.0.1:10809
       - HTTP_PROXY=http://172.17.0.1:10809
       - https_proxy=http://172.17.0.1:10809

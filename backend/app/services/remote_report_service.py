@@ -16,7 +16,7 @@
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
 import httpx
@@ -54,6 +54,27 @@ class BatchResult:
 # 用 isoformat() 会输出带 'T' 和微秒, 远端会回 PARAM_ERROR "考核日期格式错误".
 _REMOTE_EVAL_DATETIME_FMT = "%Y-%m-%d %H:%M:%S"
 
+# 上海时区 (UTC+8). exam.created_at 由 datetime.utcnow() 落库, 是 naive-UTC,
+# 直接 strftime 推给远端会比真实上传时间慢 8 小时. 中国无夏令时, 固定 +8 偏移即可,
+# 也不依赖容器内是否装了 tzdata.
+_SHANGHAI_TZ = timezone(timedelta(hours=8))
+
+
+def _format_eval_at(created_at: datetime | None) -> str:
+    """把考核时间(=视频上传时间)按上海时区格式化为远端要求的字符串.
+
+    created_at 落库时是 datetime.utcnow() 产生的 naive-UTC, 这里先打上 UTC tz
+    再转上海时区; 若上游已是 tz-aware 也能正确换算, 不会被覆盖.
+    """
+    if not created_at:
+        return ""
+    aware = (
+        created_at.replace(tzinfo=timezone.utc)
+        if created_at.tzinfo is None
+        else created_at
+    )
+    return aware.astimezone(_SHANGHAI_TZ).strftime(_REMOTE_EVAL_DATETIME_FMT)
+
 # 视频/PDF 回链的路径前缀 - FastAPI 路由挂载在 /api/v1, 不带前缀远端 404
 _PUBLIC_API_PREFIX = "/api/v1"
 
@@ -84,9 +105,8 @@ def build_evaluation_payload(
         "score": int(round(total_score or 0.0)),
         "use_at": int(session_duration_sec) if session_duration_sec else 0,
         "video_url": f"{api_base}/exam/{exam_id}/video/play",
-        "evaluation_at": (
-            created_at.strftime(_REMOTE_EVAL_DATETIME_FMT) if created_at else ""
-        ),
+        # 考核时间 = 视频上传时间 (exam.created_at), 转上海时区后下推
+        "evaluation_at": _format_eval_at(created_at),
         "pdf_url": f"{api_base}/exam/{exam_id}/report/pdf/view",
     }
 
