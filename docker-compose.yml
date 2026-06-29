@@ -167,8 +167,8 @@ services:
     image: onerahmet/openai-whisper-asr-webservice
     # 当前服务器 NVIDIA 服务异常 (nvidia-persistenced socket missing), 暂用 CPU 模式.
     # CPU 推理: large-v3 + int8 量化, 5min 音频约 3-5 分钟. 待 GPU 恢复后可改回 :latest + 加 deploy.resources.devices.
-    ports:
-      - "9000:9000"
+    # 仅供 api/celery_worker 经 examiner 内网以 http://whisper-api:9000 访问, 不暴露宿主机端口,
+    # 避免与宿主机 PHP-fpm 抢占 9000. 如需宿主机直连调试, 再临时加 ports: ["9001:9000"].
     environment:
       # 时区统一为上海, 与宿主机保持一致
       - TZ=Asia/Shanghai
